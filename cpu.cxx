@@ -26,15 +26,15 @@ struct icomplex4 {
   unsigned char data;
   constexpr icomplex4() : data(0) {}
   constexpr icomplex4(signed char real, signed char imag)
-      : data((real + 8) | ((imag + 8) << 4)) {}
-  constexpr signed char real() const { return (data & 0x0f) - 8; }
-  constexpr signed char imag() const { return (data >> 4) - 8; }
+      : data((real + 8) << 4 | ((imag + 8))) {}
+  constexpr signed char real() const { return (data >> 4) - 8; }
+  constexpr signed char imag() const { return (data & 0x0f) - 8; }
 };
 
-static_assert(icomplex4(1, 2).data == 0xa9);
-static_assert(icomplex4(-1, 2).data == 0xa7);
-static_assert(icomplex4(1, -2).data == 0x69);
-static_assert(icomplex4(-1, -2).data == 0x67);
+static_assert(icomplex4(1, 2).data == 0x9a);
+static_assert(icomplex4(-1, 2).data == 0x7a);
+static_assert(icomplex4(1, -2).data == 0x96);
+static_assert(icomplex4(-1, -2).data == 0x76);
 static_assert(icomplex4(1, 2).real() == 1);
 static_assert(icomplex4(1, 2).imag() == 2);
 static_assert(icomplex4(-1, 2).real() == -1);
@@ -125,6 +125,7 @@ int main(int argc, char **argv) {
   uint32_t checksum =
       adler32(reinterpret_cast<unsigned char *>(Jarray.data()), Jarray.size());
   cout << "Checksum: 0x" << hex << setfill('0') << setw(8) << checksum << "\n";
+  assert(checksum == 0x59b6a388);
   cout << "Done.\n";
   return 0;
 }
