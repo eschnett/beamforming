@@ -3,12 +3,15 @@
 // Build with
 // g++ -std=c++17 -Ofast -march=native cpu.cxx -o cpu
 
-#define restrict __restrict__
+#include "adler32.h"
 
 #include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <cstddef>
+#include <iomanip>
+#include <iostream>
+#include <vector>
 
 using namespace std;
 
@@ -73,6 +76,7 @@ void form_beams(icomplex4 *restrict const Jarray,
     return Garray[b + nbeams * f];
   };
 
+#pragma omp parallel for
   for (size_t b = 0; b < nbeams; ++b) {
     for (size_t f = 0; f < nfrequencies; ++f) {
       for (size_t p = 0; p < npolarizations; ++p) {
@@ -102,4 +106,25 @@ void form_beams(icomplex4 *restrict const Jarray,
   }
 }
 
-int main(int argc, char **argv) { return 0; }
+int main(int argc, char **argv) {
+  cout << "beamforming.cpu\n";
+  cout << "Setting up input data...\n";
+  vector<icomplex4> Earray(ntimes * nfrequencies * ndishes * npolarizations);
+  vector<icomplex4> Aarray(nfrequencies * nbeams * ndishes);
+  vector<float> Garray(nfrequencies * nbeams);
+  for (size_t n = 0; n < Earray.size(); ++n)
+    Earray[n] = icomplex4(n % 15 - 7, (n + 1) % 15 - 7);
+  for (size_t n = 0; n < Aarray.size(); ++n)
+    Aarray[n] = icomplex4(n % 15 - 7, (n + 1) % 15 - 7);
+  for (size_t n = 0; n < Garray.size(); ++n)
+    Garray[n] = (n / ndishes) * (15 + n % 15) / 30;
+  vector<icomplex4> Jarray(nbeams * nfrequencies * npolarizations * ntimes);
+  cout << "Forming beams...\n";
+  form_beams(Jarray.data(), Earray.data(), Aarray.data(), Garray.data());
+  cout << "Calculating checksum...\n";
+  uint32_t checksum =
+      adler32(reinterpret_cast<unsigned char *>(Jarray.data()), Jarray.size());
+  cout << "Checksum: 0x" << hex << setfill('0') << setw(8) << checksum << "\n";
+  cout << "Done.\n";
+  return 0;
+}
