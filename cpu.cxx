@@ -1,8 +1,5 @@
 // Beamforming on the CPU
 
-// Build with
-// g++ -std=c++17 -Ofast -march=native cpu.cxx -o cpu
-
 #include "adler32.h"
 
 #include <algorithm>
@@ -84,7 +81,7 @@ void form_beams(icomplex4 *restrict const Jarray,
 
           int rawJre = 0;
           int rawJim = 0;
-          for (int d = 0; d < ndishes; ++d) {
+          for (size_t d = 0; d < ndishes; ++d) {
             const icomplex4 A = Aelem(f, b, d);
             signed char Are = A.real();
             signed char Aim = A.imag();
