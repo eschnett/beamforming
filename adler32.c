@@ -4,7 +4,7 @@
 
 const uint32_t MOD_ADLER = 65521;
 
-uint32_t adler32(unsigned char *data, size_t len)
+uint32_t adler32(const unsigned char *data, size_t len)
 // Where data is the location of the data in physical memory and len
 // is the length of the data in bytes
 {

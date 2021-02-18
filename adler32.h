@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-uint32_t adler32(unsigned char *data, size_t len);
+uint32_t adler32(const unsigned char *data, size_t len);
 
 #ifdef __cplusplus
 }
