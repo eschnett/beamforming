@@ -11,6 +11,8 @@ cpu: adler32.o cpu.o icomplex4.o
 	$(CXX) $(CXXFLAGS) -o $@ $^
 cuda: adler32.o cuda.o icomplex4.o
 	$(CU) $(CUFLAGS) -o $@ $^
+matmul: matmul.o
+	$(CU) $(CUFLAGS) -o $@ $^
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c $*.c
@@ -22,11 +24,13 @@ cuda: adler32.o cuda.o icomplex4.o
 adler32.o: adler32.h
 cpu.o: icomplex4.hxx
 cuda.o: adler32.h
+matmul.o:
 icomplex4.o: adler32.h icomplex4.hxx
 
 format:
-	clang-format -i adler32.h adler32.c cpu.cxx cuda.cu icomplex4.cxx icomplex4.hxx
+	clang-format -i adler32.h adler32.c cpu.cxx cuda.cu icomplex4.cxx icomplex4.hxx matmul.cu
 clean:
-	rm -f cpu cuda adler32.o cpu.o cuda.o icomplex4.o
+	rm -f cpu cuda matmul
+	rm -f adler32.o cpu.o cuda.o icomplex4.o matmul.o
 
 .PHONY: all format clean
