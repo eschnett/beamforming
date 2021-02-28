@@ -40,37 +40,63 @@ static_assert(icomplex4(-1, -2).imag() == -2);
 
 ////////////////////////////////////////////////////////////////////////////////
 
-const size_t ntimes = 32768;    // per chunk
-const size_t nfrequencies = 32; // per GPU
-const size_t ndishes = 512;
-const size_t npolarizations = 2;
-const size_t nbeams = 128;
+constexpr size_t ntimes = 32;       // 32768;    // per chunk
+constexpr size_t nfrequencies = 32; // per GPU
+constexpr size_t ndishes = 512;
+constexpr size_t npolarizations = 2;
+constexpr size_t nbeams = 128;
+constexpr size_t ncomplex = 2; // complex number components
 
 // Accessors handling memory layout
-constexpr size_t Eindex(size_t t, size_t f, size_t d, size_t p) {
+
+constexpr size_t Esize =
+    ntimes * nfrequencies * ndishes * npolarizations * ncomplex;
+constexpr size_t Elinear(size_t t, size_t f, size_t d, size_t p, size_t c) {
   assert(t < ntimes);
   assert(f < nfrequencies);
   assert(d < ndishes);
   assert(p < npolarizations);
-  return p + npolarizations * (d + ndishes * (f + nfrequencies * t));
+  assert(c < ncomplex);
+  const auto ind =
+      c +
+      ncomplex * (p + npolarizations * (d + ndishes * (f + nfrequencies * t)));
+  assert(ind < Esize);
+  return ind;
 }
-constexpr size_t Jindex(size_t b, size_t f, size_t p, size_t t) {
+
+constexpr size_t Jsize =
+    nbeams * nfrequencies * npolarizations * ntimes * ncomplex;
+constexpr size_t Jlinear(size_t b, size_t f, size_t p, size_t t, size_t c) {
   assert(b < nbeams);
   assert(f < nfrequencies);
   assert(p < npolarizations);
   assert(t < ntimes);
-  return t + ntimes * (p + npolarizations * (f + nfrequencies * b));
+  assert(c < ncomplex);
+  const auto ind =
+      c +
+      ncomplex * (t + ntimes * (p + npolarizations * (f + nfrequencies * b)));
+  assert(ind < Jsize);
+  return ind;
 }
-constexpr size_t Aindex(size_t f, size_t b, size_t d) {
+
+constexpr size_t Asize = nfrequencies * nbeams * ndishes * ncomplex;
+constexpr size_t Alinear(size_t f, size_t b, size_t d, size_t c) {
   assert(f < nfrequencies);
   assert(b < nbeams);
   assert(d < ndishes);
-  return d + ndishes * (b + nbeams * f);
+  assert(c < ncomplex);
+  const auto ind = c + ncomplex * (d + ndishes * (b + nbeams * f));
+  assert(ind < Asize);
+  return ind;
 }
-constexpr size_t Gindex(size_t f, size_t b) {
+
+constexpr size_t Gsize = nfrequencies * nbeams;
+constexpr size_t Glinear(size_t f, size_t b) {
   assert(f < nfrequencies);
   assert(b < nbeams);
-  return b + nbeams * f;
+  const auto ind = b + nbeams * f;
+  assert(ind < Gsize);
+  return ind;
 }
 
 void setup(vector<icomplex4> &Earray, vector<icomplex4> &Aarray,

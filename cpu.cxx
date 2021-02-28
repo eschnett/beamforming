@@ -25,20 +25,20 @@ void form_beams(icomplex4 *restrict const Jarray,
           int rawJre = 0;
           int rawJim = 0;
           for (size_t d = 0; d < ndishes; ++d) {
-            const icomplex4 A = Aarray[Aindex(f, b, d)];
+            const icomplex4 A = Aarray[Alinear(f, b, d, 0) / 2];
             signed char Are = A.real();
             signed char Aim = A.imag();
-            const icomplex4 E = Earray[Eindex(t, f, d, p)];
+            const icomplex4 E = Earray[Elinear(t, f, d, p, 0) / 2];
             signed char Ere = E.real();
             signed char Eim = E.imag();
             rawJre += Are * Ere - Aim * Eim;
             rawJim += Are * Eim + Aim * Ere;
           }
 
-          const float G = Garray[Gindex(f, b)];
+          const float G = Garray[Glinear(f, b)];
           int Jre = max(-7, min(7, int(lrint(G * float(rawJre)))));
           int Jim = max(-7, min(7, int(lrint(G * float(rawJim)))));
-          icomplex4 &Jitem = Jarray[Jindex(b, f, p, t)];
+          icomplex4 &Jitem = Jarray[Jlinear(b, f, p, t, 0) / 2];
           Jitem = icomplex4(Jre, Jim);
         }
       }
