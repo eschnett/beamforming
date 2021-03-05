@@ -83,18 +83,18 @@ static_assert(Gsize <= UINT_MAX);
 // Reshape arrays
 
 vector<icomplex4> prepare_A(const vector<icomplex4> &Aarray) {
-  for (size_t f = 0; f < nfrequencies; ++f) {
-    for (size_t b = 0; b < nbeams; ++b) {
-      for (size_t d = 0; d < ndishes; ++d) {
-        for (size_t c = 0; c < ncomplex; ++c) {
-          cout << "A["
-               // << ",f=" << f << ",b=" << b << ",d=" << d
-               << ",c=" << c
-               << "]=" << int(Aarray.at(Alinear(f, b, d, c) / 2)[c]) << "\n";
-        }
-      }
-    }
-  }
+  // for (size_t f = 0; f < nfrequencies; ++f) {
+  //   for (size_t b = 0; b < nbeams; ++b) {
+  //     for (size_t d = 0; d < ndishes; ++d) {
+  //       for (size_t c = 0; c < ncomplex; ++c) {
+  //         cout << "A["
+  //              // << ",f=" << f << ",b=" << b << ",d=" << d
+  //              << ",c=" << c
+  //              << "]=" << int(Aarray.at(Alinear(f, b, d, c) / 2)[c]) << "\n";
+  //       }
+  //     }
+  //   }
+  // }
 
   vector<icomplex4> Aarray1(Asize1 / 2);
   for (size_t f = 0; f < nfrequencies; ++f) {
@@ -144,29 +144,29 @@ vector<icomplex4> prepare_A(const vector<icomplex4> &Aarray) {
     }
   }
 
-  for (size_t f = 0; f < nfrequencies; ++f) {
-    for (size_t b = 0; b < nbeams; ++b) {
-      for (size_t p1 = 0; p1 < npolarizations; ++p1) {
-        for (size_t c1 = 0; c1 < ncomplex; ++c1) {
-          for (size_t d = 0; d < ndishes; ++d) {
-            for (size_t p2 = 0; p2 < npolarizations; ++p2) {
-              for (size_t c2 = 0; c2 < ncomplex; ++c2) {
-                cout << "A1["
-                     // << ",f=" << f << ",b=" << b
-                     << ",p1=" << p1 << ",c1="
-                     << c1
-                     // << ",d=" << d
-                     << ",p2=" << p2 << ",c2=" << c2 << "]="
-                     << int(Aarray1.at(Alinear1(f, b, p1, c1, d, p2, c2) /
-                                       2)[c2])
-                     << "\n";
-              }
-            }
-          }
-        }
-      }
-    }
-  }
+  // for (size_t f = 0; f < nfrequencies; ++f) {
+  //   for (size_t b = 0; b < nbeams; ++b) {
+  //     for (size_t p1 = 0; p1 < npolarizations; ++p1) {
+  //       for (size_t c1 = 0; c1 < ncomplex; ++c1) {
+  //         for (size_t d = 0; d < ndishes; ++d) {
+  //           for (size_t p2 = 0; p2 < npolarizations; ++p2) {
+  //             for (size_t c2 = 0; c2 < ncomplex; ++c2) {
+  //               cout << "A1["
+  //                    // << ",f=" << f << ",b=" << b
+  //                    << ",p1=" << p1 << ",c1="
+  //                    << c1
+  //                    // << ",d=" << d
+  //                    << ",p2=" << p2 << ",c2=" << c2 << "]="
+  //                    << int(Aarray1.at(Alinear1(f, b, p1, c1, d, p2, c2) /
+  //                                      2)[c2])
+  //                    << "\n";
+  //             }
+  //           }
+  //         }
+  //       }
+  //     }
+  //   }
+  // }
 
   return Aarray1;
 }
@@ -191,21 +191,21 @@ vector<icomplex4> prepare_J(const vector<icomplex4> &Jarray) {
 }
 
 void restore_J(vector<icomplex4> &Jarray, const vector<icomplex4> &Jarray1) {
-  for (size_t t = 0; t < ntimes; ++t) {
-    for (size_t f = 0; f < nfrequencies; ++f) {
-      for (size_t b = 0; b < nbeams; ++b) {
-        for (size_t p = 0; p < npolarizations; ++p) {
-          for (size_t c = 0; c < ncomplex; ++c) {
-            cout << "J1["
-                 << ",t=" << t << ",f=" << f << ",b=" << b << ",p=" << p
-                 << ",c=" << c
-                 << "]=" << int(Jarray1.at(Jlinear1(t, f, b, p, c) / 2)[c])
-                 << "\n";
-          }
-        }
-      }
-    }
-  }
+  // for (size_t t = 0; t < ntimes; ++t) {
+  //   for (size_t f = 0; f < nfrequencies; ++f) {
+  //     for (size_t b = 0; b < nbeams; ++b) {
+  //       for (size_t p = 0; p < npolarizations; ++p) {
+  //         for (size_t c = 0; c < ncomplex; ++c) {
+  //           cout << "J1["
+  //                << ",t=" << t << ",f=" << f << ",b=" << b << ",p=" << p
+  //                << ",c=" << c
+  //                << "]=" << int(Jarray1.at(Jlinear1(t, f, b, p, c) / 2)[c])
+  //                << "\n";
+  //         }
+  //       }
+  //     }
+  //   }
+  // }
 
   for (size_t b = 0; b < nbeams; ++b) {
     for (size_t f = 0; f < nfrequencies; ++f) {
@@ -267,9 +267,10 @@ void form_beams(unsigned char *restrict const Jarray,
         }
 
         const int rawJ = C;
-        cout << "rawJ["
-             << ",f=" << f << ",t=" << t / 4 << ",b=" << b / 4
-             << ",p=" << (b / 2) % 2 << ",c=" << b % 2 << "]=" << rawJ << "\n";
+        // cout << "rawJ["
+        //      << ",f=" << f << ",t=" << t / 4 << ",b=" << b / 4
+        //      << ",p=" << (b / 2) % 2 << ",c=" << b % 2 << "]=" << rawJ <<
+        //      "\n";
 
         // Remove offset from 4-bit complex representation in E
         // rawJ -= 8 * ndishes * npolarizations * ncomplex;

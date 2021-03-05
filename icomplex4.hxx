@@ -39,12 +39,26 @@ static_assert(icomplex4(-1, -2).imag() == -2);
 
 ////////////////////////////////////////////////////////////////////////////////
 
-constexpr size_t ntimes = 1;       // 32768;    // per chunk
-constexpr size_t nfrequencies = 1; // 32; // per GPU
-constexpr size_t ndishes = 1;      // 512;
+// constexpr size_t ntimes = 1;       // 32768;    // per chunk
+// constexpr size_t nfrequencies = 1; // 32; // per GPU
+// constexpr size_t ndishes = 1;      // 512;
+// constexpr size_t npolarizations = 2;
+// constexpr size_t nbeams = 1;   // 128;
+// constexpr size_t ncomplex = 2; // complex number components
+
+constexpr size_t ntimes = 32;       // per chunk
+constexpr size_t nfrequencies = 32; // per GPU
+constexpr size_t ndishes = 512;
 constexpr size_t npolarizations = 2;
-constexpr size_t nbeams = 1;   // 128;
+constexpr size_t nbeams = 128;
 constexpr size_t ncomplex = 2; // complex number components
+
+// constexpr size_t ntimes = 1;       // per chunk
+// constexpr size_t nfrequencies = 1; // per GPU
+// constexpr size_t ndishes = 1;
+// constexpr size_t npolarizations = 2;
+// constexpr size_t nbeams = 1;
+// constexpr size_t ncomplex = 2; // complex number components
 
 // Accessors handling memory layout
 

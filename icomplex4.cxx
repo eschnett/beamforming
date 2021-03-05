@@ -28,21 +28,21 @@ constexpr uint32_t correct_checksum = ntimes == 32768 ? 0xdeba4178
                                                       : 0;
 
 void check(const vector<icomplex4> &Jarray) {
-  for (size_t b = 0; b < nbeams; ++b) {
-    for (size_t f = 0; f < nfrequencies; ++f) {
-      for (size_t p = 0; p < npolarizations; ++p) {
-        for (size_t t = 0; t < ntimes; ++t) {
-          for (size_t c = 0; c < ncomplex; ++c) {
-            cout << "J["
-                 << ",b=" << b << ",f=" << f << ",p=" << p << ",t=" << t
-                 << ",c=" << c
-                 << "]=" << int(Jarray.at(Jlinear(b, f, p, t, c) / 2)[c])
-                 << "\n";
-          }
-        }
-      }
-    }
-  }
+  // for (size_t b = 0; b < nbeams; ++b) {
+  //   for (size_t f = 0; f < nfrequencies; ++f) {
+  //     for (size_t p = 0; p < npolarizations; ++p) {
+  //       for (size_t t = 0; t < ntimes; ++t) {
+  //         for (size_t c = 0; c < ncomplex; ++c) {
+  //           cout << "J["
+  //                << ",b=" << b << ",f=" << f << ",p=" << p << ",t=" << t
+  //                << ",c=" << c
+  //                << "]=" << int(Jarray.at(Jlinear(b, f, p, t, c) / 2)[c])
+  //                << "\n";
+  //         }
+  //       }
+  //     }
+  //   }
+  // }
 
   cout << "Calculating checksum...\n";
 
