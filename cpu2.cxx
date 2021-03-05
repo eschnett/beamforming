@@ -286,13 +286,12 @@ void form_beams(unsigned char *restrict const Jarray,
         // const unsigned char Juchar = Jint + 8;
         const unsigned char J = Jint;
 
-        const unsigned int Jlinear =
-            b + nbeams * npolarizations * ncomplex * (f + nfrequencies * t);
-        assert(Jlinear < Jsize);
-        unsigned char *const Jptr = &Jarray[Jlinear / 2];
+        const unsigned int Jindex = Jlinear1(t, f, b / 4, (b / 2) % 2, b % 2);
+        assert(Jindex < Jsize);
+        unsigned char *const Jptr = &Jarray[Jindex / 2];
         *(icomplex4 *)Jptr =
-            icomplex4(Jlinear % 2 == 1 ? J : ((const icomplex4 *)Jptr)->real(),
-                      Jlinear % 2 == 0 ? J : ((const icomplex4 *)Jptr)->imag());
+            icomplex4(Jindex % 2 == 1 ? J : ((const icomplex4 *)Jptr)->real(),
+                      Jindex % 2 == 0 ? J : ((const icomplex4 *)Jptr)->imag());
       }
     }
   }

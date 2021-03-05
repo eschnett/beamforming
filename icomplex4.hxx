@@ -1,6 +1,12 @@
 #ifndef ICOMPLEX4
 #define ICOMPLEX4
 
+#ifdef __CUDACC__
+#define device_host __device__ __host__
+#else
+#define device_host
+#endif
+
 #include <cassert>
 #include <cstdint>
 #include <vector>
@@ -22,6 +28,11 @@ struct icomplex4 {
   constexpr signed char operator[](int c) const {
     return c == 0 ? imag() : real();
   }
+  constexpr icomplex4 debias() const {
+    icomplex4 r;
+    r.data = data ^ 0x88;
+    return r;
+  }
 };
 
 static_assert(icomplex4(1, 2).data == 0x9a);
@@ -39,18 +50,25 @@ static_assert(icomplex4(-1, -2).imag() == -2);
 
 ////////////////////////////////////////////////////////////////////////////////
 
-// constexpr size_t ntimes = 1;       // 32768;    // per chunk
-// constexpr size_t nfrequencies = 1; // 32; // per GPU
-// constexpr size_t ndishes = 1;      // 512;
+// constexpr size_t ntimes = 32768;    // per chunk
+// constexpr size_t nfrequencies = 32; // per GPU
+// constexpr size_t ndishes = 512;
 // constexpr size_t npolarizations = 2;
-// constexpr size_t nbeams = 1;   // 128;
+// constexpr size_t nbeams = 128;
 // constexpr size_t ncomplex = 2; // complex number components
 
-constexpr size_t ntimes = 32;       // per chunk
-constexpr size_t nfrequencies = 32; // per GPU
-constexpr size_t ndishes = 512;
+// constexpr size_t ntimes = 32;       // per chunk
+// constexpr size_t nfrequencies = 32; // per GPU
+// constexpr size_t ndishes = 512;
+// constexpr size_t npolarizations = 2;
+// constexpr size_t nbeams = 128;
+// constexpr size_t ncomplex = 2; // complex number components
+
+constexpr size_t ntimes = 8;       // per chunk
+constexpr size_t nfrequencies = 1; // per GPU
+constexpr size_t ndishes = 8;
 constexpr size_t npolarizations = 2;
-constexpr size_t nbeams = 128;
+constexpr size_t nbeams = 2;
 constexpr size_t ncomplex = 2; // complex number components
 
 // constexpr size_t ntimes = 1;       // per chunk
@@ -64,7 +82,8 @@ constexpr size_t ncomplex = 2; // complex number components
 
 constexpr size_t Esize =
     ntimes * nfrequencies * ndishes * npolarizations * ncomplex;
-constexpr size_t Elinear(size_t t, size_t f, size_t d, size_t p, size_t c) {
+constexpr device_host size_t Elinear(size_t t, size_t f, size_t d, size_t p,
+                                     size_t c) {
   assert(t < ntimes);
   assert(f < nfrequencies);
   assert(d < ndishes);
@@ -79,7 +98,8 @@ constexpr size_t Elinear(size_t t, size_t f, size_t d, size_t p, size_t c) {
 
 constexpr size_t Jsize =
     nbeams * nfrequencies * npolarizations * ntimes * ncomplex;
-constexpr size_t Jlinear(size_t b, size_t f, size_t p, size_t t, size_t c) {
+constexpr device_host size_t Jlinear(size_t b, size_t f, size_t p, size_t t,
+                                     size_t c) {
   assert(b < nbeams);
   assert(f < nfrequencies);
   assert(p < npolarizations);
@@ -93,7 +113,7 @@ constexpr size_t Jlinear(size_t b, size_t f, size_t p, size_t t, size_t c) {
 }
 
 constexpr size_t Asize = nfrequencies * nbeams * ndishes * ncomplex;
-constexpr size_t Alinear(size_t f, size_t b, size_t d, size_t c) {
+constexpr device_host size_t Alinear(size_t f, size_t b, size_t d, size_t c) {
   assert(f < nfrequencies);
   assert(b < nbeams);
   assert(d < ndishes);
@@ -104,7 +124,7 @@ constexpr size_t Alinear(size_t f, size_t b, size_t d, size_t c) {
 }
 
 constexpr size_t Gsize = nfrequencies * nbeams;
-constexpr size_t Glinear(size_t f, size_t b) {
+constexpr device_host size_t Glinear(size_t f, size_t b) {
   assert(f < nfrequencies);
   assert(b < nbeams);
   const auto ind = b + nbeams * f;

@@ -14,16 +14,32 @@ void setup(vector<icomplex4> &Earray, vector<icomplex4> &Aarray,
   Garray.resize(Gsize);
   Jarray.resize(Jsize / 2);
 
-  for (size_t n = 0; n < Earray.size(); ++n)
-    Earray[n] = icomplex4(n % 15 - 7, (n + 1) % 15 - 7);
-  for (size_t n = 0; n < Aarray.size(); ++n)
-    Aarray[n] = icomplex4(n % 15 - 7, (n + 1) % 15 - 7);
-  for (size_t n = 0; n < Garray.size(); ++n)
-    Garray[n] = (float(n) / ndishes) * (15 + n % 15) / 30;
+  // for (size_t n = 0; n < Earray.size(); ++n)
+  //   Earray[n] = icomplex4(n % 15 - 7, (n + 1) % 15 - 7);
+  // for (size_t n = 0; n < Aarray.size(); ++n)
+  //   Aarray[n] = icomplex4(n % 15 - 7, (n + 1) % 15 - 7);
+  // for (size_t n = 0; n < Garray.size(); ++n)
+  //   Garray[n] = (float(n) / ndishes) * (15 + n % 15) / 30;
+
+  for (size_t t = 0; t < ntimes; ++t)
+    for (size_t f = 0; f < nfrequencies; ++f)
+      for (size_t d = 0; d < ndishes; ++d)
+        for (size_t p = 0; p < npolarizations; ++p)
+          Earray.at(Elinear(t, f, d, p, 0) / 2) = icomplex4(0, 0);
+
+  for (size_t f = 0; f < nfrequencies; ++f)
+    for (size_t b = 0; b < nbeams; ++b)
+      for (size_t d = 0; d < ndishes; ++d)
+        Aarray.at(Alinear(f, b, d, 0) / 2) = icomplex4(0, 0);
+
+  for (size_t f = 0; f < nfrequencies; ++f)
+    for (size_t b = 0; b < nbeams; ++b)
+      Garray.at(Glinear(f, b)) = 1;
 }
 
 constexpr uint32_t correct_checksum = ntimes == 32768 ? 0xdeba4178
                                       : ntimes == 32  ? 0x4acd2311
+                                      : ntimes == 8   ? 0x10a40fdf
                                       : ntimes == 1   ? 0x019a0111
                                                       : 0;
 
