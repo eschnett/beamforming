@@ -19,7 +19,6 @@ struct icomplex4 {
       : data(((real + 8) << 4) | (imag + 8)) {}
   constexpr signed char real() const { return (data >> 4) - 8; }
   constexpr signed char imag() const { return (data & 0x0f) - 8; }
-  // CUDA might use the opposite indexing order
   constexpr signed char operator[](int c) const {
     return c == 0 ? imag() : real();
   }
@@ -40,11 +39,11 @@ static_assert(icomplex4(-1, -2).imag() == -2);
 
 ////////////////////////////////////////////////////////////////////////////////
 
-constexpr size_t ntimes = 32;       // 32768;    // per chunk
-constexpr size_t nfrequencies = 32; // per GPU
-constexpr size_t ndishes = 512;
+constexpr size_t ntimes = 1;       // 32768;    // per chunk
+constexpr size_t nfrequencies = 1; // 32; // per GPU
+constexpr size_t ndishes = 1;      // 512;
 constexpr size_t npolarizations = 2;
-constexpr size_t nbeams = 128;
+constexpr size_t nbeams = 1;   // 128;
 constexpr size_t ncomplex = 2; // complex number components
 
 // Accessors handling memory layout

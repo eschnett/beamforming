@@ -83,6 +83,19 @@ static_assert(Gsize <= UINT_MAX);
 // Reshape arrays
 
 vector<icomplex4> prepare_A(const vector<icomplex4> &Aarray) {
+  for (size_t f = 0; f < nfrequencies; ++f) {
+    for (size_t b = 0; b < nbeams; ++b) {
+      for (size_t d = 0; d < ndishes; ++d) {
+        for (size_t c = 0; c < ncomplex; ++c) {
+          cout << "A["
+               // << ",f=" << f << ",b=" << b << ",d=" << d
+               << ",c=" << c
+               << "]=" << int(Aarray.at(Alinear(f, b, d, c) / 2)[c]) << "\n";
+        }
+      }
+    }
+  }
+
   vector<icomplex4> Aarray1(Asize1 / 2);
   for (size_t f = 0; f < nfrequencies; ++f) {
     for (size_t b = 0; b < nbeams; ++b) {
@@ -91,23 +104,38 @@ vector<icomplex4> prepare_A(const vector<icomplex4> &Aarray) {
           for (size_t d = 0; d < ndishes; ++d) {
             for (size_t p2 = 0; p2 < npolarizations; ++p2) {
               const icomplex4 Ac = Aarray[Alinear(f, b, d, 0) / 2];
-              const signed char A[2] = {Ac.real(), Ac.imag()};
+              // [1]=real, [0]=imag
+              const signed char A[2] = {Ac.imag(), Ac.real()};
               signed char A1[2];
               if (p1 == p2) {
-                // J.re = A.re * E.re - A.im * E.im
-                // J.im = A.im * E.re + A.re * E.im
-                if (c1 == 0) {
-                  A1[0] = A[0];
-                  A1[1] = -A[1];
-                } else {
-                  A1[0] = A[1];
+                // Want:
+                //   J.re = A.re * E.re - A.im * E.im
+                //   J.im = A.im * E.re + A.re * E.im
+                // Old layout:
+                //   J[p][0] = A[0] * E[p][1] + A[1] * E[p][0]
+                //   J[p][1] = A[1] * E[p][1] - A[0] * E[p][0]
+                // New layout:
+                //   J[p][0] = A1[p][q][0] * E[p][1] + A1[p][q][1] * E[p][0]
+                //   J[p][1] = A1[p][q][1] * E[p][1] - A1[p][q][0] * E[p][0]
+                // Coefficients:
+                //   A1[p][q][0][0] = delta[p][q] A[1]
+                //   A1[p][q][0][1] = delta[p][q] A[0]
+                //   A1[p][q][1][0] = delta[p][q] (-A[0])
+                //   A1[p][q][1][1] = delta[p][q] A[1]
+                //
+                // Setting A1[c1][c2]
+                if (c1 == 1) { // real part
+                  A1[1] = A[1];
+                  A1[0] = -A[0];
+                } else { // imaginary part
                   A1[1] = A[0];
+                  A1[0] = A[1];
                 }
               } else {
-                A1[0] = 0;
                 A1[1] = 0;
+                A1[0] = 0;
               }
-              const icomplex4 A1c(A1[0], A1[1]);
+              const icomplex4 A1c(A1[1], A1[0]);
               Aarray1[Alinear1(f, b, p1, c1, d, p2, 0) / 2] = A1c;
             }
           }
@@ -115,11 +143,36 @@ vector<icomplex4> prepare_A(const vector<icomplex4> &Aarray) {
       }
     }
   }
+
+  for (size_t f = 0; f < nfrequencies; ++f) {
+    for (size_t b = 0; b < nbeams; ++b) {
+      for (size_t p1 = 0; p1 < npolarizations; ++p1) {
+        for (size_t c1 = 0; c1 < ncomplex; ++c1) {
+          for (size_t d = 0; d < ndishes; ++d) {
+            for (size_t p2 = 0; p2 < npolarizations; ++p2) {
+              for (size_t c2 = 0; c2 < ncomplex; ++c2) {
+                cout << "A1["
+                     // << ",f=" << f << ",b=" << b
+                     << ",p1=" << p1 << ",c1="
+                     << c1
+                     // << ",d=" << d
+                     << ",p2=" << p2 << ",c2=" << c2 << "]="
+                     << int(Aarray1.at(Alinear1(f, b, p1, c1, d, p2, c2) /
+                                       2)[c2])
+                     << "\n";
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
   return Aarray1;
 }
 
 vector<float> prepare_G(const vector<float> &Garray) {
-  vector<float> Garray1(Gsize1 / 2);
+  vector<float> Garray1(Gsize1);
   for (size_t f = 0; f < nfrequencies; ++f) {
     for (size_t b = 0; b < nbeams; ++b) {
       for (size_t p = 0; p < npolarizations; ++p) {
@@ -138,6 +191,22 @@ vector<icomplex4> prepare_J(const vector<icomplex4> &Jarray) {
 }
 
 void restore_J(vector<icomplex4> &Jarray, const vector<icomplex4> &Jarray1) {
+  for (size_t t = 0; t < ntimes; ++t) {
+    for (size_t f = 0; f < nfrequencies; ++f) {
+      for (size_t b = 0; b < nbeams; ++b) {
+        for (size_t p = 0; p < npolarizations; ++p) {
+          for (size_t c = 0; c < ncomplex; ++c) {
+            cout << "J1["
+                 << ",t=" << t << ",f=" << f << ",b=" << b << ",p=" << p
+                 << ",c=" << c
+                 << "]=" << int(Jarray1.at(Jlinear1(t, f, b, p, c) / 2)[c])
+                 << "\n";
+          }
+        }
+      }
+    }
+  }
+
   for (size_t b = 0; b < nbeams; ++b) {
     for (size_t f = 0; f < nfrequencies; ++f) {
       for (size_t p = 0; p < npolarizations; ++p) {
@@ -186,40 +255,43 @@ void form_beams(unsigned char *restrict const Jarray,
           const signed char A = (*Aptr)[Aindex % 2];
 
           // const unsigned int Eindex =
-          //     d + ndishes * npolarizations * ncomplex * (f + nfrequencies *
-          //     t);
+          //     d + ndishes * npolarizations * ncomplex * (f +
+          //     nfrequencies * t);
           // assert(Eindex < Esize1);
           const unsigned int Eindex = Elinear1(t, f, d / 4, (d / 2) % 2, d % 2);
           const icomplex4 *const Eptr = (const icomplex4 *)&Earray[Eindex / 2];
-          signed char B = (*Eptr)[Eindex % 2];
+          const signed char B = (*Eptr)[Eindex % 2];
 
           // Multiply
           C += A * B;
         }
 
-        int rawJ = C;
+        const int rawJ = C;
+        cout << "rawJ["
+             << ",f=" << f << ",t=" << t / 4 << ",b=" << b / 4
+             << ",p=" << (b / 2) % 2 << ",c=" << b % 2 << "]=" << rawJ << "\n";
 
         // Remove offset from 4-bit complex representation in E
         // rawJ -= 8 * ndishes * npolarizations * ncomplex;
 
         // Apply gain
-        // const unsigned int Glinear = b + nbeams * npolarizations * ncomplex *
-        // f;
-        // assert(Gindex < Gsize);
+        // const unsigned int Glinear = b + nbeams * npolarizations *
+        // ncomplex * f; assert(Gindex < Gsize);
         const unsigned int Gindex = Glinear1(f, b / 4, (b / 2) % 2, b % 2);
-        int Jint = min(7, max(-7, int(lrintf(rawJ * Garray[Gindex]))));
+        const int Jint =
+            min(7, max(-7, int(lrintf(Garray[Gindex] * float(rawJ)))));
 
         // Assemble 4-bit complex number
-        unsigned char Juchar = Jint + 8;
-        unsigned char J = Juchar;
+        // const unsigned char Juchar = Jint + 8;
+        const unsigned char J = Jint;
 
         const unsigned int Jlinear =
             b + nbeams * npolarizations * ncomplex * (f + nfrequencies * t);
         assert(Jlinear < Jsize);
         unsigned char *const Jptr = &Jarray[Jlinear / 2];
         *(icomplex4 *)Jptr =
-            icomplex4(Jlinear % 2 == 1 ? J : ((icomplex4 *)Jptr)->real(),
-                      Jlinear % 2 == 0 ? J : ((icomplex4 *)Jptr)->imag());
+            icomplex4(Jlinear % 2 == 1 ? J : ((const icomplex4 *)Jptr)->real(),
+                      Jlinear % 2 == 0 ? J : ((const icomplex4 *)Jptr)->imag());
       }
     }
   }
