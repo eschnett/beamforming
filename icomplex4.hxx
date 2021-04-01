@@ -13,40 +13,85 @@
 
 using namespace std;
 
-// a 4-bit complex number
-struct icomplex4 {
+struct ucomplex4;
+struct icomplex4;
+
+// a 4-bit complex number with an offset encoding
+struct ucomplex4 {
   // CHIME uses the following conventions:
   // - real part is stored in upper 4 bits, imaginary part in lower 4 bits
   // - each value is in the range -7 ... 7 (the value cannot be -8)
   // - each value x is stored as unsigned number as x + 8
   unsigned char data;
-  constexpr icomplex4() : data(0) {}
-  constexpr icomplex4(signed char real, signed char imag)
-      : data(((real + 8) << 4) | (imag + 8)) {}
-  constexpr signed char real() const { return (data >> 4) - 8; }
-  constexpr signed char imag() const { return (data & 0x0f) - 8; }
-  constexpr signed char operator[](int c) const {
+  constexpr device_host ucomplex4() : data(0) {}
+  constexpr device_host ucomplex4(signed char real, signed char imag)
+      : data((((unsigned char)real << 4) | (imag & 0x0f)) ^ 0x88) {}
+  constexpr device_host signed char real() const {
+    return (signed char)(data ^ 0x88) >> 4;
+  }
+  constexpr device_host signed char imag() const {
+    return (signed char)((unsigned char)(data ^ 0x88) << 4) >> 4;
+  }
+  constexpr device_host ucomplex4 conj() const {
+    return ucomplex4(real(), -imag());
+  }
+  constexpr device_host ucomplex4 swap() const {
+    return ucomplex4(imag(), real());
+  }
+  constexpr device_host signed char operator[](int c) const {
     return c == 0 ? imag() : real();
   }
-  constexpr icomplex4 debias() const {
-    icomplex4 r;
-    r.data = data ^ 0x88;
-    return r;
-  }
+  constexpr device_host icomplex4 debias() const;
 };
 
-static_assert(icomplex4(1, 2).data == 0x9a);
-static_assert(icomplex4(-1, 2).data == 0x7a);
-static_assert(icomplex4(1, -2).data == 0x96);
-static_assert(icomplex4(-1, -2).data == 0x76);
-static_assert(icomplex4(1, 2).real() == 1);
-static_assert(icomplex4(1, 2).imag() == 2);
-static_assert(icomplex4(-1, 2).real() == -1);
-static_assert(icomplex4(-1, 2).imag() == 2);
-static_assert(icomplex4(1, -2).real() == 1);
-static_assert(icomplex4(1, -2).imag() == -2);
-static_assert(icomplex4(-1, -2).real() == -1);
-static_assert(icomplex4(-1, -2).imag() == -2);
+static_assert(ucomplex4(1, 2).data == 0x9a);
+static_assert(ucomplex4(-1, 2).data == 0x7a);
+static_assert(ucomplex4(1, -2).data == 0x96);
+static_assert(ucomplex4(-1, -2).data == 0x76);
+static_assert(ucomplex4(1, 2).real() == 1);
+static_assert(ucomplex4(1, 2).imag() == 2);
+static_assert(ucomplex4(-1, 2).real() == -1);
+static_assert(ucomplex4(-1, 2).imag() == 2);
+static_assert(ucomplex4(1, -2).real() == 1);
+static_assert(ucomplex4(1, -2).imag() == -2);
+static_assert(ucomplex4(-1, -2).real() == -1);
+static_assert(ucomplex4(-1, -2).imag() == -2);
+
+// a 4-bit complex number
+struct icomplex4 {
+  unsigned char data;
+  constexpr device_host icomplex4() : data(0) {}
+  constexpr device_host icomplex4(signed char real, signed char imag)
+      : data((real << 4) | (imag & 0x0f)) {}
+  constexpr device_host signed char real() const {
+    return (signed char)data >> 4;
+  }
+  constexpr device_host signed char imag() const {
+    return (signed char)(data << 4) >> 4;
+  }
+  constexpr device_host icomplex4 conj() const {
+    return icomplex4(real(), -imag());
+  }
+  constexpr device_host icomplex4 swap() const {
+    return icomplex4(imag(), real());
+  }
+  constexpr device_host signed char operator[](int c) const {
+    return c == 0 ? imag() : real();
+  }
+  constexpr device_host ucomplex4 bias() const;
+};
+
+constexpr device_host icomplex4 ucomplex4::debias() const {
+  icomplex4 r;
+  r.data = data ^ 0x88;
+  return r;
+}
+
+constexpr device_host ucomplex4 icomplex4::bias() const {
+  ucomplex4 r;
+  r.data = data ^ 0x88;
+  return r;
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -66,9 +111,9 @@ static_assert(icomplex4(-1, -2).imag() == -2);
 
 constexpr size_t ntimes = 8;       // per chunk
 constexpr size_t nfrequencies = 1; // per GPU
-constexpr size_t ndishes = 8;
+constexpr size_t ndishes = 32;
 constexpr size_t npolarizations = 2;
-constexpr size_t nbeams = 2;
+constexpr size_t nbeams = 8;
 constexpr size_t ncomplex = 2; // complex number components
 
 // constexpr size_t ntimes = 1;       // per chunk
@@ -79,6 +124,11 @@ constexpr size_t ncomplex = 2; // complex number components
 // constexpr size_t ncomplex = 2; // complex number components
 
 // Accessors handling memory layout
+
+// E[time][frequency][dish][polarization][complex]
+// A[frequency][beam][dish][complex]
+// J[beam][frequency][polarization][time][complex]
+// G[frequency][beam][complex]
 
 constexpr size_t Esize =
     ntimes * nfrequencies * ndishes * npolarizations * ncomplex;
@@ -132,8 +182,8 @@ constexpr device_host size_t Glinear(size_t f, size_t b) {
   return ind;
 }
 
-void setup(vector<icomplex4> &Earray, vector<icomplex4> &Aarray,
-           vector<float> &Garray, vector<icomplex4> &Jarray);
-void check(const vector<icomplex4> &Jarray);
+void setup(vector<ucomplex4> &Earray, vector<ucomplex4> &Aarray,
+           vector<float> &Garray, vector<ucomplex4> &Jarray);
+void check(const vector<ucomplex4> &Jarray);
 
 #endif // #ifndef ICOMPLEX4

@@ -27,8 +27,48 @@ __global__ void matmul(int *restrict const Cptr) {
 
   // Set fragment
   for (int t = 0; t < C.num_elements; t++)
-    C.x[t] = threadIdx.x;
+    if (t % 2 == 0)
+      C.x[t] = 2 * threadIdx.x + 0;
+    else
+      C.x[t] = 2 * threadIdx.x + 1;
 
+  // Store to global memory
+  store_matrix_sync(Cptr, C, n, mem_row_major);
+
+  // // Store to local memory (not supported by wmma)
+  // int Ctmp[m * n];
+  // store_matrix_sync(Ctmp, C, n, mem_row_major);
+
+  // Cptr[2 * threadIdx.x + 0] = Ctmp[2 * threadIdx.x + 0];
+  // Cptr[2 * threadIdx.x + 1] = Ctmp[2 * threadIdx.x + 1];
+}
+
+__global__ void matmul2(int *restrict const Cptr) {
+  fragment<wmma::accumulator, m, n, k, int> C;
+  // Set fragment
+  for (int t = 0; t < C.num_elements; t++)
+    C.x[t] = 0;
+
+  fragment<wmma::matrix_a, m, n, k, experimental::precision::s4, row_major> A;
+  // Set fragment
+  static_assert(A.num_elements == 8 * A.num_storage_elements, "");
+  for (int t = 0; t < A.num_storage_elements; ++t)
+    A.x[t] = (((8 * threadIdx.x + 7) & 0x0f) << 0x1c) |
+             (((8 * threadIdx.x + 6) & 0x0f) << 0x18) |
+             (((8 * threadIdx.x + 5) & 0x0f) << 0x14) |
+             (((8 * threadIdx.x + 4) & 0x0f) << 0x10) |
+             (((8 * threadIdx.x + 3) & 0x0f) << 0x0c) |
+             (((8 * threadIdx.x + 2) & 0x0f) << 0x08) |
+             (((8 * threadIdx.x + 1) & 0x0f) << 0x04) |
+             (((8 * threadIdx.x + 0) & 0x0f) << 0x00);
+
+  fragment<wmma::matrix_b, m, n, k, experimental::precision::s4, col_major> B;
+  // Set fragment
+  for (int t = 0; t < B.num_elements; t++)
+    B.x[t] = 1;
+
+  // Store to global memory
+  mma_sync(C, A, B, C);
   store_matrix_sync(Cptr, C, n, mem_row_major);
 }
 

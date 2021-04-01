@@ -1,12 +1,12 @@
 // -*-c++-*-
-// Beamforming with CUDA's memory layout
+// Beamforming with CUDA
 
 #include "adler32.h"
-#include "icomplex4.hxx"
+#include "ucomplex4.hxx"
+
+#include <mma.h>
 
 #include <cassert>
-#include <climits>
-#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <iomanip>
@@ -15,6 +15,8 @@
 
 using namespace std;
 
+using namespace nvcuda;
+using namespace nvcuda::wmma;
 // Accessors handling memory layout
 
 // E[time][frequency][dish][polarization][complex]
@@ -23,13 +25,15 @@ using namespace std;
 // G[frequency][beam][polarization][complex]
 
 constexpr size_t Esize1 = Esize;
-constexpr size_t Elinear1(size_t t, size_t f, size_t d, size_t p, size_t c) {
+constexpr device_host size_t Elinear1(size_t t, size_t f, size_t d, size_t p,
+                                      size_t c) {
   return Elinear(t, f, d, p, c);
 }
 
 constexpr size_t Jsize1 =
     ntimes * nfrequencies * nbeams * npolarizations * ncomplex;
-constexpr size_t Jlinear1(size_t t, size_t f, size_t b, size_t p, size_t c) {
+constexpr device_host size_t Jlinear1(size_t t, size_t f, size_t b, size_t p,
+                                      size_t c) {
   assert(t < ntimes);
   assert(f < nfrequencies);
   assert(b < nbeams);
@@ -44,8 +48,8 @@ constexpr size_t Jlinear1(size_t t, size_t f, size_t b, size_t p, size_t c) {
 
 constexpr size_t Asize1 = nfrequencies * nbeams * npolarizations * ncomplex *
                           ndishes * npolarizations * ncomplex;
-constexpr size_t Alinear1(size_t f, size_t b, size_t p1, size_t c1, size_t d,
-                          size_t p2, size_t c2) {
+constexpr device_host size_t Alinear1(size_t f, size_t b, size_t p1, size_t c1,
+                                      size_t d, size_t p2, size_t c2) {
   assert(f < nfrequencies);
   assert(b < nbeams);
   assert(p1 < npolarizations);
@@ -65,7 +69,7 @@ constexpr size_t Alinear1(size_t f, size_t b, size_t p1, size_t c1, size_t d,
 }
 
 constexpr size_t Gsize1 = nfrequencies * nbeams * npolarizations * ncomplex;
-constexpr size_t Glinear1(size_t f, size_t b, size_t p, size_t c) {
+constexpr device_host size_t Glinear1(size_t f, size_t b, size_t p, size_t c) {
   assert(f < nfrequencies);
   assert(b < nbeams);
   assert(p < npolarizations);
@@ -75,10 +79,10 @@ constexpr size_t Glinear1(size_t f, size_t b, size_t p, size_t c) {
   return ind;
 }
 
-static_assert(Jsize <= UINT_MAX);
-static_assert(Esize <= UINT_MAX);
-static_assert(Asize <= UINT_MAX);
-static_assert(Gsize <= UINT_MAX);
+static_assert(Jsize1 <= UINT_MAX);
+static_assert(Esize1 <= UINT_MAX);
+static_assert(Asize1 <= UINT_MAX);
+static_assert(Gsize1 <= UINT_MAX);
 
 // Reshape arrays
 
@@ -136,7 +140,7 @@ vector<ucomplex4> prepare_A(const vector<ucomplex4> &Aarray) {
                 A1[0] = 0;
               }
               const ucomplex4 A1c(A1[1], A1[0]);
-              Aarray1[Alinear1(f, b, p1, c1, d, p2, 0) / 2] = A1c;
+              Aarray1[Alinear1(f, b, p1, c1, d, p2, 0) / 2] = A1c.debias();
             }
           }
         }
@@ -219,10 +223,10 @@ void restore_J(vector<ucomplex4> &Jarray, const vector<ucomplex4> &Jarray1) {
   }
 }
 
-void form_beams(unsigned char *restrict const Jarray,
-                const unsigned char *restrict const Earray,
-                const unsigned char *restrict const Aarray,
-                const float *restrict Garray) {
+__global__ void form_beams(unsigned char *restrict const Jarray,
+                           const unsigned char *restrict const Earray,
+                           const unsigned char *restrict const Aarray,
+                           const float *restrict Garray) {
   // This is the array layout. Having the polarization inside requires
   // making A four times as large, and doubles the number of floating
   // point operations. Avoiding this requires changing the memory
@@ -236,69 +240,137 @@ void form_beams(unsigned char *restrict const Jarray,
   // J.re = A.re * E.re - A.im * E.im
   // J.im = A.im * E.re + A.re * E.im
 
+  // operation:    D = A * B + C
+  // matrix sizes: C, D: m * n
+  //               A:    m * k
+  //               B:    k * n
+  //               D[m,n] = C[m,n] + A[m,k] B[k,n]
+  // consequences: m ranges over beams
+  //               k ranges over dishes
+  //               n ranges over times
+  // Nothing ranges over frequencies since all of E, A, and J depend
+  // on frequencies.
+
+  // These sizes are dictated by CUDA
+  constexpr int m = 8;  // beams
+  constexpr int n = 8;  // times
+  constexpr int k = 32; // dishes
+  assert(nbeams * npolarizations * ncomplex % m == 0);
+  assert(ndishes * npolarizations * ncomplex % k == 0);
+  assert(ntimes % n == 0);
+
+  assert(blockDim.x == n);
+  assert(blockDim.y == m / 2);
+  assert(blockDim.z == 1);
+
+  assert(ndishes * npolarizations * ncomplex % 32 == 0); // for load_matrix_sync
+
   for (unsigned int f = 0; f < nfrequencies; ++f) {
-    printf("f=%u\n", f);
-    for (unsigned int t = 0; t < ntimes; ++t) {
-      for (unsigned int b = 0; b < nbeams * npolarizations * ncomplex; ++b) {
+    if (threadIdx.x == 0 && threadIdx.y == 0 && threadIdx.z == 0)
+      printf("f=%u\n", f);
+    for (unsigned int t = 0; t < ntimes; t += n) {
+      for (unsigned int b = 0; b < nbeams * npolarizations * ncomplex; b += m) {
 
-        int C = 0;
+        fragment<wmma::accumulator, m, n, k, int32_t> C;
+        fill_fragment(C, 0);
 
-        for (unsigned int d = 0; d < ndishes * npolarizations * ncomplex; ++d) {
+        for (unsigned int d = 0; d < ndishes * npolarizations * ncomplex;
+             d += k) {
 
-          // const unsigned int Aindex =
-          //     d + ndishes * npolarizations * ncomplex *
-          //             (b + nbeams * npolarizations * ncomplex * f);
-          // assert(Aindex < Asize1);
+          // A must be row major
+          fragment<wmma::matrix_a, m, n, k, experimental::precision::s4,
+                   row_major>
+              A;
           const unsigned int Aindex =
-              Alinear1(f, b / 4, (b / 2) % 2, b % 2, d / 4, (d / 2) % 2, d % 2);
-          const ucomplex4 *const Aptr = (const ucomplex4 *)&Aarray[Aindex / 2];
-          const signed char A = (*Aptr)[Aindex % 2];
+              Alinear1(f, b / 4, b / 2 % 2, b % 2, d / 4, d / 2 % 2, d % 2);
+          const unsigned int dlast = d + k - 1;
+          const unsigned int Aindexlast = Alinear1(
+              f, b / 4, b / 2 % 2, b % 2, dlast / 4, dlast / 2 % 2, dlast % 2);
+          assert(Aindex < Asize1);
+          assert(Aindexlast < Asize1);
+          const unsigned char *const Aptr = &Aarray[Aindex / 2];
+          // assert(intptr_t(Aptr) % (128 / 8) == 0);
+          const unsigned int bnext = b + 1;
+          const unsigned int Aindexnext = Alinear1(
+              f, bnext / 4, bnext / 2 % 2, bnext % 2, d / 4, d / 2 % 2, d % 2);
+          assert(Aindexnext - Aindex == ndishes * npolarizations * ncomplex);
+          load_matrix_sync(A, Aptr, ndishes * npolarizations * ncomplex);
 
-          // const unsigned int Eindex =
-          //     d + ndishes * npolarizations * ncomplex * (f +
-          //     nfrequencies * t);
-          // assert(Eindex < Esize1);
-          const unsigned int Eindex = Elinear1(t, f, d / 4, (d / 2) % 2, d % 2);
-          const ucomplex4 *const Eptr = (const ucomplex4 *)&Earray[Eindex / 2];
-          const signed char B = (*Eptr)[Eindex % 2];
+          // B must be column major
+          fragment<wmma::matrix_b, m, n, k, experimental::precision::s4,
+                   col_major>
+              B;
+          const unsigned int Eindex = Elinear1(t, f, d / 4, d / 2 % 2, d % 2);
+          const unsigned char *const Eptr = &Earray[Eindex / 2];
+          const unsigned int Eindexlast =
+              Elinear1(t, f, dlast / 4, dlast / 2 % 2, dlast % 2);
+          assert(Eindex < Esize1);
+          assert(Eindexlast < Esize1);
+          // assert(intptr_t(Eptr) % (128 / 8) == 0);
+          const unsigned int tnext = t + 1;
+          const unsigned int Eindexnext =
+              Elinear1(tnext, f, d / 4, d / 2 % 2, d % 2);
+          assert(Eindexnext - Eindex ==
+                 ndishes * npolarizations * ncomplex * nfrequencies);
+          load_matrix_sync(B, Eptr,
+                           ndishes * npolarizations * ncomplex * nfrequencies);
+          for (int i = 0; i < B.num_elements; ++i)
+            B.x[i] -= 8;
 
           // Multiply
-          C += A * B;
+          mma_sync(C, A, B, C);
         }
 
-        const int rawJ = C;
-        // cout << "rawJ["
-        //      << ",f=" << f << ",t=" << t / 4 << ",b=" << b / 4
-        //      << ",p=" << (b / 2) % 2 << ",c=" << b % 2 << "]=" << rawJ <<
-        //      "\n";
-
-        // Remove offset from 4-bit complex representation in E
-        // rawJ -= 8 * ndishes * npolarizations * ncomplex;
+        __shared__ int rawJarray[m][n];
+        // assert(intptr_t(&rawJarray[0][0]) % (256 / 8) == 0);
+        store_matrix_sync(&rawJarray[0][0], C, n, mem_row_major);
 
         // Apply gain
-        // const unsigned int Glinear = b + nbeams * npolarizations *
-        // ncomplex * f; assert(Gindex < Gsize);
-        const unsigned int Gindex = Glinear1(f, b / 4, (b / 2) % 2, b % 2);
-        const int Jint =
-            min(7, max(-7, int(lrintf(Garray[Gindex] * float(rawJ)))));
+        // We use threads for times
+        // TODO: Make use of all threads
+        assert(blockDim.x == n);
+        assert(2 * blockDim.y == m);
+        const unsigned int t1 = threadIdx.x;
+        const unsigned int b1 = 2 * threadIdx.y;
 
+        int rawJ0 = rawJarray[b1 + 0][t1];
+        int rawJ1 = rawJarray[b1 + 1][t1];
+        // Remove offset from 4-bit complex representation in E
+        // rawJ0 -= 8 * ndishes * npolarizations * ncomplex;
+        // rawJ1 -= 8 * ndishes * npolarizations * ncomplex;
+        const unsigned int Gindex =
+            Glinear1(f, (b + b1) / 4, (b + b1) / 2 % 2, (b + b1) % 2);
+        assert(Gindex + 1 < Gsize1);
+        signed char Jint0 =
+            min(7, max(-7, int(lrintf(rawJ0 * Garray[Gindex + 0]))));
+        signed char Jint1 =
+            min(7, max(-7, int(lrintf(rawJ1 * Garray[Gindex + 1]))));
         // Assemble 4-bit complex number
-        // const unsigned char Juchar = Jint + 8;
-        const unsigned char J = Jint;
+        unsigned char Juchar0 = Jint0 + 8;
+        unsigned char Juchar1 = Jint1 + 8;
+        unsigned char J = Juchar0 | (Juchar1 << 4);
 
-        const unsigned int Jindex = Jlinear1(t, f, b / 4, (b / 2) % 2, b % 2);
-        assert(Jindex < Jsize);
+        const unsigned int Jindex =
+            Jlinear1(t + t1, f, (b + b1) / 4, (b + b1) / 2 % 2, (b + b1) % 2);
+        assert(Jindex < Jsize1);
         unsigned char *const Jptr = &Jarray[Jindex / 2];
-        *(ucomplex4 *)Jptr =
-            ucomplex4(Jindex % 2 == 1 ? J : ((const ucomplex4 *)Jptr)->real(),
-                      Jindex % 2 == 0 ? J : ((const ucomplex4 *)Jptr)->imag());
+        *Jptr = J;
       }
     }
   }
 }
 
+#define CHECK_RESULT(err) check_result(__FILE__, __LINE__, err)
+void check_result(const char *file, int line, cudaError_t err) {
+  if (err != cudaSuccess) {
+    cerr << file << ":" << line << ": CUDA error " << err << ": "
+         << cudaGetErrorName(err) << ": " << cudaGetErrorString(err) << "\n";
+    exit(1);
+  }
+}
+
 int main(int argc, char **argv) {
-  cout << "beamforming.cpu2\n";
+  cout << "beamforming.cuda2\n";
 
   vector<ucomplex4> Earray;
   vector<ucomplex4> Aarray;
@@ -314,9 +386,44 @@ int main(int argc, char **argv) {
   vector<ucomplex4> Jarray1 = prepare_J(Jarray);
 
   cout << "Forming beams...\n";
-  form_beams((unsigned char *)Jarray1.data(),
-             (const unsigned char *)Earray1.data(),
-             (const unsigned char *)Aarray1.data(), Garray1.data());
+  unsigned char *Earray2 = nullptr;
+  cudaMalloc(&Earray2, Earray1.size() * sizeof(unsigned char));
+  cudaMemcpy(Earray2, Earray1.data(), Earray1.size() * sizeof(unsigned char),
+             cudaMemcpyHostToDevice);
+  unsigned char *Aarray2 = nullptr;
+  cudaMalloc(&Aarray2, Aarray1.size() * sizeof(unsigned char));
+  cudaMemcpy(Aarray2, Aarray1.data(), Aarray1.size() * sizeof(unsigned char),
+             cudaMemcpyHostToDevice);
+  float *Garray2 = nullptr;
+  cudaMalloc(&Garray2, Garray1.size() * sizeof(float));
+  cudaMemcpy(Garray2, Garray1.data(), Garray1.size() * sizeof(float),
+             cudaMemcpyHostToDevice);
+  unsigned char *Jarray2 = nullptr;
+  cudaMalloc(&Jarray2, Jarray1.size() * sizeof(unsigned char));
+
+  cudaError_t err = cudaGetLastError();
+  CHECK_RESULT(err);
+  const dim3 numBlocks(1);
+  const dim3 threadsPerBlock(8, 4);
+  form_beams<<<numBlocks, threadsPerBlock>>>(Jarray2, Earray2, Aarray2,
+                                             Garray2);
+  err = cudaGetLastError();
+  CHECK_RESULT(err);
+  err = cudaDeviceSynchronize();
+  CHECK_RESULT(err);
+  err = cudaGetLastError();
+  CHECK_RESULT(err);
+
+  cudaFree(Earray2);
+  Earray2 = nullptr;
+  cudaFree(Aarray2);
+  Aarray2 = nullptr;
+  cudaFree(Garray2);
+  Garray2 = nullptr;
+  cudaMemcpy(Jarray1.data(), Jarray2, Jarray1.size() * sizeof(unsigned char),
+             cudaMemcpyDeviceToHost);
+  cudaFree(Jarray2);
+  Jarray2 = nullptr;
 
   // Undo layout modification
   restore_J(Jarray, Jarray1);

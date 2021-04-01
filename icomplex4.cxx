@@ -5,8 +5,8 @@
 #include <iomanip>
 #include <iostream>
 
-void setup(vector<icomplex4> &Earray, vector<icomplex4> &Aarray,
-           vector<float> &Garray, vector<icomplex4> &Jarray) {
+void setup(vector<ucomplex4> &Earray, vector<ucomplex4> &Aarray,
+           vector<float> &Garray, vector<ucomplex4> &Jarray) {
   cout << "Setting up input data...\n";
 
   Earray.resize(Esize / 2);
@@ -14,23 +14,38 @@ void setup(vector<icomplex4> &Earray, vector<icomplex4> &Aarray,
   Garray.resize(Gsize);
   Jarray.resize(Jsize / 2);
 
-  for (size_t n = 0; n < Earray.size(); ++n)
-    Earray[n] = icomplex4(n % 15 - 7, (n + 1) % 15 - 7);
-  for (size_t n = 0; n < Aarray.size(); ++n)
-    Aarray[n] = icomplex4(n % 15 - 7, (n + 1) % 15 - 7);
-  for (size_t n = 0; n < Garray.size(); ++n)
+  for (size_t n = 0; n < Earray.size(); ++n) {
+    Earray[n] = ucomplex4(n % 15 - 7, (n + 1) % 15 - 7);
+    // Earray[n] = ucomplex4(1, 0);
+    // Earray[n] = ucomplex4(n % 2, 0);
+    // Earray[n] = ucomplex4(0, n % 2);
+    // Earray[n] = ucomplex4(n % 15 - 7, 0);
+  }
+  for (size_t n = 0; n < Aarray.size(); ++n) {
+    Aarray[n] = ucomplex4(n % 15 - 7, (n + 1) % 15 - 7);
+    /// Aarray[n] = ucomplex4(1, 1);
+    // Aarray[n] = ucomplex4(1, 0);
+    // Aarray[n] = ucomplex4(0, 1);
+    // Aarray[n] = ucomplex4(n == 0, n == 1);
+    // Aarray[n] = ucomplex4(n % 15 - 7, 0);
+  }
+  for (size_t n = 0; n < Garray.size(); ++n) {
     Garray[n] = float(n) / Garray.size() / ndishes * (15 + n % 15) / 30;
+    // Garray[n] = float(1) / ndishes;
+    // Garray[n] = float(1);
+    // Garray[n] = n == 0;
+  }
 
   // for (size_t t = 0; t < ntimes; ++t)
   //   for (size_t f = 0; f < nfrequencies; ++f)
   //     for (size_t d = 0; d < ndishes; ++d)
   //       for (size_t p = 0; p < npolarizations; ++p)
-  //         Earray.at(Elinear(t, f, d, p, 0) / 2) = icomplex4(0, 0);
+  //         Earray.at(Elinear(t, f, d, p, 0) / 2) = ucomplex4(0, 0);
 
   // for (size_t f = 0; f < nfrequencies; ++f)
   //   for (size_t b = 0; b < nbeams; ++b)
   //     for (size_t d = 0; d < ndishes; ++d)
-  //       Aarray.at(Alinear(f, b, d, 0) / 2) = icomplex4(0, 0);
+  //       Aarray.at(Alinear(f, b, d, 0) / 2) = ucomplex4(0, 0);
 
   // for (size_t f = 0; f < nfrequencies; ++f)
   //   for (size_t b = 0; b < nbeams; ++b)
@@ -39,22 +54,20 @@ void setup(vector<icomplex4> &Earray, vector<icomplex4> &Aarray,
 
 constexpr uint32_t correct_checksum = ntimes == 32768 ? 0x4de6498f
                                       : ntimes == 32  ? 0xab69dfee
-                                      : ntimes == 8   ? 0x14ad106a
+                                      : ntimes == 8   ? 0x3a3344bc
                                       : ntimes == 1   ? 0x019a0111
                                                       : 0;
 
-void check(const vector<icomplex4> &Jarray) {
+void check(const vector<ucomplex4> &Jarray) {
   // for (size_t b = 0; b < nbeams; ++b) {
   //   for (size_t f = 0; f < nfrequencies; ++f) {
   //     for (size_t p = 0; p < npolarizations; ++p) {
   //       for (size_t t = 0; t < ntimes; ++t) {
-  //         for (size_t c = 0; c < ncomplex; ++c) {
-  //           cout << "J["
-  //                << ",b=" << b << ",f=" << f << ",p=" << p << ",t=" << t
-  //                << ",c=" << c
-  //                << "]=" << int(Jarray.at(Jlinear(b, f, p, t, c) / 2)[c])
-  //                << "\n";
-  //         }
+  //         const auto J = Jarray.at(Jlinear(b, f, p, t, 0) / 2);
+  //         cout << "J["
+  //              << "b=" << b << ",f=" << f << ",p=" << p << ",t=" << t << "] =
+  //              ("
+  //              << int(J.real()) << "," << int(J.imag()) << ")\n";
   //       }
   //     }
   //   }
