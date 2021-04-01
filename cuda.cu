@@ -23,6 +23,14 @@ using namespace nvcuda::wmma;
 // J[beam][frequency][polarization][time][complex]
 // G[frequency][beam][complex]
 
+__device__ int32_t extract_real(const int32_t x0, const int32_t x1) {
+  return ((uint32_t)(x0 & 0xf0f0f0f0U) >> 4) | (x1 & 0xf0f0f0f0U);
+}
+
+__device__ int32_t extract_imag(const int32_t x0, const int32_t x1) {
+  return (x0 & 0x0f0f0f0f0U) | ((uint32_t)(x1 & 0x0f0f0f0f0U) << 4);
+}
+
 __global__ void form_beams(ucomplex4 *restrict const Jarray,
                            const ucomplex4 *restrict const Earray,
                            const ucomplex4 *restrict const Aarray,
@@ -79,15 +87,28 @@ __global__ void form_beams(ucomplex4 *restrict const Jarray,
 
         ////////////////////////////////////////////////////////////////////////////////
 
-        __shared__ __align__(64) unsigned char AreArray[m][k / 2],
-            AimArray[m][k / 2];
+        ucomplex4 A0Array[m][k / 2], A1Array[m][k / 2];
         if (threadIdx.x == 0 && threadIdx.y == 0 && threadIdx.z == 0) {
           for (size_t b1 = 0; b1 < m; ++b1) {
-            for (size_t d1 = 0; d1 < k; d1 += 2) {
-              ucomplex4 A0 = Aarray[Alinear(f, b + b1, d + d1 + 0, 0) / 2];
-              ucomplex4 A1 = Aarray[Alinear(f, b + b1, d + d1 + 1, 0) / 2];
-              AreArray[b1][d1 / 2] = icomplex4(A1.real(), A0.real()).data;
-              AimArray[b1][d1 / 2] = icomplex4(A1.imag(), A0.imag()).data;
+            for (size_t d1 = 0; d1 < k / 2; ++d1) {
+              ucomplex4 A0 =
+                  Aarray[Alinear(f, b + b1, d + d1 + 0 * k / 2, 0) / 2];
+              ucomplex4 A1 =
+                  Aarray[Alinear(f, b + b1, d + d1 + 1 * k / 2, 0) / 2];
+              A0Array[b1][d1] = A0;
+              A1Array[b1][d1] = A1;
+            }
+          }
+        }
+
+        __shared__ unsigned char AreArray[m][k / 2], AimArray[m][k / 2];
+        if (threadIdx.x == 0 && threadIdx.y == 0 && threadIdx.z == 0) {
+          for (size_t b1 = 0; b1 < m; ++b1) {
+            for (size_t d1 = 0; d1 < k / 2; ++d1) {
+              ucomplex4 A0 = A0Array[b1][d1];
+              ucomplex4 A1 = A1Array[b1][d1];
+              AreArray[b1][d1] = icomplex4(A1.real(), A0.real()).data;
+              AimArray[b1][d1] = icomplex4(A1.imag(), A0.imag()).data;
             }
           }
         }
@@ -102,17 +123,18 @@ __global__ void form_beams(ucomplex4 *restrict const Jarray,
 
         ////////////////////////////////////////////////////////////////////////////////
 
-        __shared__ __align__(
-            64) unsigned char EreArray[npolarizations][n][k / 2],
+        __shared__ unsigned char EreArray[npolarizations][n][k / 2],
             EimArray[npolarizations][n][k / 2];
         if (threadIdx.x == 0 && threadIdx.y == 0 && threadIdx.z == 0) {
           for (size_t p = 0; p < npolarizations; ++p) {
             for (size_t t1 = 0; t1 < n; ++t1) {
-              for (size_t d1 = 0; d1 < k; d1 += 2) {
-                ucomplex4 E0 = Earray[Elinear(t + t1, f, d + d1 + 0, p, 0) / 2];
-                ucomplex4 E1 = Earray[Elinear(t + t1, f, d + d1 + 1, p, 0) / 2];
-                EreArray[p][t1][d1 / 2] = icomplex4(E1.real(), E0.real()).data;
-                EimArray[p][t1][d1 / 2] = icomplex4(E1.imag(), E0.imag()).data;
+              for (size_t d1 = 0; d1 < k / 2; ++d1) {
+                ucomplex4 E0 =
+                    Earray[Elinear(t + t1, f, d + d1 + 0 * k / 2, p, 0) / 2];
+                ucomplex4 E1 =
+                    Earray[Elinear(t + t1, f, d + d1 + 1 * k / 2, p, 0) / 2];
+                EreArray[p][t1][d1] = icomplex4(E1.real(), E0.real()).data;
+                EimArray[p][t1][d1] = icomplex4(E1.imag(), E0.imag()).data;
               }
             }
           }
@@ -140,7 +162,7 @@ __global__ void form_beams(ucomplex4 *restrict const Jarray,
 
       } // for dish
 
-      __shared__ __align__(64) int rawJreArray[npolarizations][m][n],
+      __shared__ int rawJreArray[npolarizations][m][n],
           rawJreNegArray[npolarizations][m][n],
           rawJimArray[npolarizations][m][n];
       for (size_t p = 0; p < npolarizations; ++p) {
