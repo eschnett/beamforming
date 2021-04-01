@@ -94,6 +94,8 @@ __global__ void form_beams(ucomplex4 *restrict const Jarray,
 
         ////////////////////////////////////////////////////////////////////////////////
 
+#if 0
+
         __shared__ unsigned char A0Array[m][k / 2], A1Array[m][k / 2];
         if (threadIdx.x == 0 && threadIdx.y == 0 && threadIdx.z == 0) {
           for (size_t b1 = 0; b1 < m; ++b1) {
@@ -107,8 +109,6 @@ __global__ void form_beams(ucomplex4 *restrict const Jarray,
             }
           }
         }
-
-#if 0
 
         __shared__ unsigned char AreArray[m][k / 2], AimArray[m][k / 2];
         if (threadIdx.x == 0 && threadIdx.y == 0 && threadIdx.z == 0) {
@@ -138,8 +138,10 @@ __global__ void form_beams(ucomplex4 *restrict const Jarray,
         fragment<wmma::matrix_a, m, n, k, experimental::precision::s4,
                  row_major>
             A0, A1;
-        load_matrix_sync(A0, &A0Array[0][0], k);
-        load_matrix_sync(A1, &A1Array[0][0], k);
+        load_matrix_sync(A0, &Aarray[Alinear(f, b, d + 0 * k / 2, 0) / 2],
+                         ndishes * ncomplex);
+        load_matrix_sync(A1, &Aarray[Alinear(f, b, d + 1 * k / 2, 0) / 2],
+                         ndishes * ncomplex);
 
         // A[beam][dish]
         // wmma::a[m][k]   (must be row major)
