@@ -28,7 +28,7 @@ __device__ int32_t extract_real(const int32_t x0, const int32_t x1) {
 }
 
 __device__ int32_t extract_imag(const int32_t x0, const int32_t x1) {
-  return (x0 & 0x0f0f0f0f0U) | ((uint32_t)(x1 & 0x0f0f0f0f0U) << 4);
+  return (x0 & 0x0f0f0f0fU) | ((uint32_t)(x1 & 0x0f0f0f0fU) << 4);
 }
 
 __global__ void form_beams(ucomplex4 *restrict const Jarray,
@@ -87,7 +87,7 @@ __global__ void form_beams(ucomplex4 *restrict const Jarray,
 
         ////////////////////////////////////////////////////////////////////////////////
 
-        ucomplex4 A0Array[m][k / 2], A1Array[m][k / 2];
+        __shared__ unsigned char A0Array[m][k / 2], A1Array[m][k / 2];
         if (threadIdx.x == 0 && threadIdx.y == 0 && threadIdx.z == 0) {
           for (size_t b1 = 0; b1 < m; ++b1) {
             for (size_t d1 = 0; d1 < k / 2; ++d1) {
@@ -95,25 +95,28 @@ __global__ void form_beams(ucomplex4 *restrict const Jarray,
                   Aarray[Alinear(f, b + b1, d + d1 + 0 * k / 2, 0) / 2];
               ucomplex4 A1 =
                   Aarray[Alinear(f, b + b1, d + d1 + 1 * k / 2, 0) / 2];
-              A0Array[b1][d1] = A0;
-              A1Array[b1][d1] = A1;
+              A0Array[b1][d1] = A0.data;
+              A1Array[b1][d1] = A1.data;
             }
           }
         }
+
+#if 0
 
         __shared__ unsigned char AreArray[m][k / 2], AimArray[m][k / 2];
         if (threadIdx.x == 0 && threadIdx.y == 0 && threadIdx.z == 0) {
           for (size_t b1 = 0; b1 < m; ++b1) {
             for (size_t d1 = 0; d1 < k / 2; ++d1) {
-              ucomplex4 A0 = A0Array[b1][d1];
-              ucomplex4 A1 = A1Array[b1][d1];
+              ucomplex4 A0, A1;
+              A0.data = A0Array[b1][d1];
+              A1.data = A1Array[b1][d1];
               AreArray[b1][d1] = icomplex4(A1.real(), A0.real()).data;
               AimArray[b1][d1] = icomplex4(A1.imag(), A0.imag()).data;
             }
           }
         }
 
-        // a[beam][dish]
+        // A[beam][dish]
         // wmma::a[m][k]   (must be row major)
         fragment<wmma::matrix_a, m, n, k, experimental::precision::s4,
                  row_major>
@@ -121,10 +124,33 @@ __global__ void form_beams(ucomplex4 *restrict const Jarray,
         load_matrix_sync(Are, &AreArray[0][0], k);
         load_matrix_sync(Aim, &AimArray[0][0], k);
 
+#else
+
+        // A[beam][dish]
+        // wmma::a[m][k]   (must be row major)
+        fragment<wmma::matrix_a, m, n, k, experimental::precision::s4,
+                 row_major>
+            A0, A1;
+        load_matrix_sync(A0, &A0Array[0][0], k);
+        load_matrix_sync(A1, &A1Array[0][0], k);
+
+        // A[beam][dish]
+        // wmma::a[m][k]   (must be row major)
+        fragment<wmma::matrix_a, m, n, k, experimental::precision::s4,
+                 row_major>
+            Are, Aim;
+        static_assert(Are.num_storage_elements == 1, "");
+        for (int i = 0; i < A0.num_storage_elements; ++i) {
+          Are.x[i] = extract_real(A0.x[i], A1.x[i]) ^ 0x88888888U;
+          Aim.x[i] = extract_imag(A0.x[i], A1.x[i]) ^ 0x88888888U;
+        }
+
+#endif
+
         ////////////////////////////////////////////////////////////////////////////////
 
-        __shared__ unsigned char EreArray[npolarizations][n][k / 2],
-            EimArray[npolarizations][n][k / 2];
+        __shared__ unsigned char E0Array[npolarizations][n][k / 2],
+            E1Array[npolarizations][n][k / 2];
         if (threadIdx.x == 0 && threadIdx.y == 0 && threadIdx.z == 0) {
           for (size_t p = 0; p < npolarizations; ++p) {
             for (size_t t1 = 0; t1 < n; ++t1) {
@@ -133,6 +159,24 @@ __global__ void form_beams(ucomplex4 *restrict const Jarray,
                     Earray[Elinear(t + t1, f, d + d1 + 0 * k / 2, p, 0) / 2];
                 ucomplex4 E1 =
                     Earray[Elinear(t + t1, f, d + d1 + 1 * k / 2, p, 0) / 2];
+                E0Array[p][t1][d1] = E0.data;
+                E1Array[p][t1][d1] = E1.data;
+              }
+            }
+          }
+        }
+
+#if 0
+
+        __shared__ unsigned char EreArray[npolarizations][n][k / 2],
+            EimArray[npolarizations][n][k / 2];
+        if (threadIdx.x == 0 && threadIdx.y == 0 && threadIdx.z == 0) {
+          for (size_t p = 0; p < npolarizations; ++p) {
+            for (size_t t1 = 0; t1 < n; ++t1) {
+              for (size_t d1 = 0; d1 < k / 2; ++d1) {
+                ucomplex4 E0, E1;
+                E0.data = E0Array[p][t1][d1];
+                E1.data = E1Array[p][t1][d1];
                 EreArray[p][t1][d1] = icomplex4(E1.real(), E0.real()).data;
                 EimArray[p][t1][d1] = icomplex4(E1.imag(), E0.imag()).data;
               }
@@ -149,6 +193,33 @@ __global__ void form_beams(ucomplex4 *restrict const Jarray,
           load_matrix_sync(Ere[p], &EreArray[p][0][0], k);
           load_matrix_sync(Eim[p], &EimArray[p][0][0], k);
         }
+
+#else
+
+        // E[time][dish]
+        // wmma::B[k][n]   (must be row major)
+        fragment<wmma::matrix_b, m, n, k, experimental::precision::s4,
+                 col_major>
+            E0[npolarizations], E1[npolarizations];
+        for (size_t p = 0; p < npolarizations; ++p) {
+          load_matrix_sync(E0[p], &E0Array[p][0][0], k);
+          load_matrix_sync(E1[p], &E1Array[p][0][0], k);
+        }
+
+        // E[time][dish]
+        // wmma::B[k][n]   (must be row major)
+        fragment<wmma::matrix_b, m, n, k, experimental::precision::s4,
+                 col_major>
+            Ere[npolarizations], Eim[npolarizations];
+        for (size_t p = 0; p < npolarizations; ++p) {
+          static_assert(Ere[p].num_storage_elements == 1, "");
+          for (int i = 0; i < Ere[0].num_storage_elements; ++i) {
+            Ere[p].x[i] = extract_real(E0[p].x[i], E1[p].x[i]) ^ 0x88888888U;
+            Eim[p].x[i] = extract_imag(E0[p].x[i], E1[p].x[i]) ^ 0x88888888U;
+          }
+        }
+
+#endif
 
         ////////////////////////////////////////////////////////////////////////////////
 
