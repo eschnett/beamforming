@@ -1,9 +1,17 @@
 #include "icomplex4.hxx"
 #include "adler32.h"
 
+#include <sys/time.h>
+
 #include <cstdlib>
 #include <iomanip>
 #include <iostream>
+
+double gettime() {
+  timeval tv;
+  gettimeofday(&tv, nullptr);
+  return tv.tv_sec + tv.tv_usec / 1.0e+6;
+}
 
 void setup(vector<ucomplex4> &Earray, vector<ucomplex4> &Aarray,
            vector<float> &Garray, vector<ucomplex4> &Jarray) {

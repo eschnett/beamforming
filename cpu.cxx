@@ -56,7 +56,10 @@ int main(int argc, char **argv) {
   setup(Earray, Aarray, Garray, Jarray);
 
   cout << "Forming beams...\n";
+  const auto t0 = gettime();
   form_beams(Jarray.data(), Earray.data(), Aarray.data(), Garray.data());
+  const auto t1 = gettime();
+  cout << "Elapsed time: " << (t1 - t0) << " seconds\n";
 
   check(Jarray);
 

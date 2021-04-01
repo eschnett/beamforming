@@ -95,12 +95,12 @@ constexpr device_host ucomplex4 icomplex4::bias() const {
 
 ////////////////////////////////////////////////////////////////////////////////
 
-// constexpr size_t ntimes = 32768;    // per chunk
-// constexpr size_t nfrequencies = 32; // per GPU
-// constexpr size_t ndishes = 512;
-// constexpr size_t npolarizations = 2;
-// constexpr size_t nbeams = 128;
-// constexpr size_t ncomplex = 2; // complex number components
+constexpr size_t ntimes = 32768;    // per chunk
+constexpr size_t nfrequencies = 32; // per GPU
+constexpr size_t ndishes = 512;
+constexpr size_t npolarizations = 2;
+constexpr size_t nbeams = 128;
+constexpr size_t ncomplex = 2; // complex number components
 
 // constexpr size_t ntimes = 32;       // per chunk
 // constexpr size_t nfrequencies = 32; // per GPU
@@ -109,12 +109,12 @@ constexpr device_host ucomplex4 icomplex4::bias() const {
 // constexpr size_t nbeams = 128;
 // constexpr size_t ncomplex = 2; // complex number components
 
-constexpr size_t ntimes = 8;       // per chunk
-constexpr size_t nfrequencies = 1; // per GPU
-constexpr size_t ndishes = 32;
-constexpr size_t npolarizations = 2;
-constexpr size_t nbeams = 8;
-constexpr size_t ncomplex = 2; // complex number components
+// constexpr size_t ntimes = 8;       // per chunk
+// constexpr size_t nfrequencies = 1; // per GPU
+// constexpr size_t ndishes = 32;
+// constexpr size_t npolarizations = 2;
+// constexpr size_t nbeams = 8;
+// constexpr size_t ncomplex = 2; // complex number components
 
 // constexpr size_t ntimes = 1;       // per chunk
 // constexpr size_t nfrequencies = 1; // per GPU
@@ -181,6 +181,8 @@ constexpr device_host size_t Glinear(size_t f, size_t b) {
   assert(ind < Gsize);
   return ind;
 }
+
+double gettime();
 
 void setup(vector<ucomplex4> &Earray, vector<ucomplex4> &Aarray,
            vector<float> &Garray, vector<ucomplex4> &Jarray);

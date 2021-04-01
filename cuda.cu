@@ -69,6 +69,13 @@ __global__ void form_beams(ucomplex4 *restrict const Jarray,
   static_assert(ndishes % k == 0, "");
   static_assert(ntimes % n == 0, "");
 
+  constexpr size_t J_num_storage_elements = 2;
+  static_assert(m % J_num_storage_elements == 0);
+
+  assert(blockDim.x == m / J_num_storage_elements);
+  assert(blockDim.y == n);
+  assert(blockDim.z == 1);
+
   const size_t f = blockIdx.x;
   for (size_t b = 0; b < nbeams; b += n) {
     for (size_t t = 0; t < ntimes; t += m) {
@@ -233,6 +240,8 @@ __global__ void form_beams(ucomplex4 *restrict const Jarray,
 
       } // for dish
 
+#if 0
+
       __shared__ int rawJreArray[npolarizations][m][n],
           rawJreNegArray[npolarizations][m][n],
           rawJimArray[npolarizations][m][n];
@@ -259,6 +268,24 @@ __global__ void form_beams(ucomplex4 *restrict const Jarray,
           }
         }
       }
+
+#else
+
+      for (size_t p = 0; p < npolarizations; ++p) {
+        static_assert(rawJre[p].num_storage_elements == J_num_storage_elements,
+                      "");
+        for (int i = 0; i < rawJre[0].num_storage_elements; ++i) {
+          const size_t t1 = J_num_storage_elements * threadIdx.x + i;
+          const size_t b1 = threadIdx.y;
+          const float G = Garray[Glinear(f, b + b1)];
+          int Jre = max(-7, min(7, int(lrint(G * float(rawJre[p].x[i] -
+                                                       rawJreNeg[p].x[i])))));
+          int Jim = max(-7, min(7, int(lrint(G * float(rawJim[p].x[i])))));
+          Jarray[Jlinear(b + b1, f, p, t + t1, 0) / 2] = ucomplex4(Jre, Jim);
+        }
+      }
+
+#endif
 
     } // for time
   }   // for beam
@@ -558,6 +585,9 @@ int main(int argc, char **argv) {
 
   cudaError_t err = cudaGetLastError();
   CHECK_RESULT(err);
+
+  const auto t0 = gettime();
+
   const int m = 8;
   const int n = 8;
   const dim3 numBlocks(nfrequencies);
@@ -568,6 +598,10 @@ int main(int argc, char **argv) {
   CHECK_RESULT(err);
   err = cudaDeviceSynchronize();
   CHECK_RESULT(err);
+
+  const auto t1 = gettime();
+  cout << "Elapsed time: " << (t1 - t0) << " seconds\n";
+
   err = cudaGetLastError();
   CHECK_RESULT(err);
 
