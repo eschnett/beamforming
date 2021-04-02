@@ -261,6 +261,7 @@ __global__ void form_beams(ucomplex4 *restrict const Jarray,
         const int32_t L = threadIdx.x & 0x03;
         for (size_t c = 0; c < ncomplex; ++c) {
           for (size_t i = 0; i < E[c][0].num_storage_elements; ++i) {
+#if 0
             switch (L) {
             case 0: {
               int32_t E_L0_c0 = E[c][0].x[i];
@@ -299,6 +300,21 @@ __global__ void form_beams(ucomplex4 *restrict const Jarray,
               break;
             }
             }
+#else
+            int32_t E0 = E[c][0].x[i];
+            int32_t E1 = E[c][1].x[i];
+            const auto select4 = [=](int a, int b, int c, int d) {
+              return L == 0 ? a : L == 1 ? b : L == 2 ? c : d;
+            };
+            int32_t E2 =
+                __shfl_xor_sync(0xffffffffU, select4(E1, E1, E0, E0), 0x02);
+            int32_t E3 =
+                __shfl_xor_sync(0xffffffffU, select4(E2, E0, E1, E2), 0x01);
+            Ep[c][0].x[i] = __byte_perm(select4(E0, E3, E2, E3),
+                                        select4(E3, E2, E3, E1), 0x6420);
+            Ep[c][1].x[i] = __byte_perm(select4(E0, E3, E2, E3),
+                                        select4(E3, E2, E3, E1), 0x7531);
+#endif
           }
         }
 
