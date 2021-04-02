@@ -124,7 +124,7 @@ __global__ void form_beams(ucomplex4 *restrict const Jarray,
         }
 
         // A[beam][dish]
-        // wmma::a[m][k]   (must be row major)
+        // wmma::A[m][k]   (must be row major)
         fragment<wmma::matrix_a, m, n, k, experimental::precision::s4,
                  row_major>
             Are, Aim;
@@ -134,29 +134,31 @@ __global__ void form_beams(ucomplex4 *restrict const Jarray,
 #else
 
         // A[beam][dish]
-        // wmma::a[m][k]   (must be row major)
+        // wmma::A[m][k]   (must be row major)
         fragment<wmma::matrix_a, m, n, k, experimental::precision::s4,
                  row_major>
-            A0, A1;
-        load_matrix_sync(A0, &Aarray[Alinear(f, b, d + 0 * k / 2, 0) / 2],
-                         ndishes * ncomplex);
-        load_matrix_sync(A1, &Aarray[Alinear(f, b, d + 1 * k / 2, 0) / 2],
-                         ndishes * ncomplex);
+            A[ncomplex];
+        for (size_t c = 0; c < ncomplex; ++c) {
+          load_matrix_sync(A[c], &Aarray[Alinear(f, b, d + c * k / 2, 0) / 2],
+                           ndishes * ncomplex);
+        }
 
         // A[beam][dish]
-        // wmma::a[m][k]   (must be row major)
+        // wmma::A[m][k]   (must be row major)
         fragment<wmma::matrix_a, m, n, k, experimental::precision::s4,
                  row_major>
             Are, Aim;
         static_assert(Are.num_storage_elements == 1, "");
-        for (int i = 0; i < A0.num_storage_elements; ++i) {
-          Are.x[i] = extract_real(A0.x[i], A1.x[i]) ^ 0x88888888U;
-          Aim.x[i] = extract_imag(A0.x[i], A1.x[i]) ^ 0x88888888U;
+        for (int i = 0; i < Are.num_storage_elements; ++i) {
+          Are.x[i] = extract_real(A[0].x[i], A[1].x[i]) ^ 0x88888888U;
+          Aim.x[i] = extract_imag(A[0].x[i], A[1].x[i]) ^ 0x88888888U;
         }
 
 #endif
 
         ////////////////////////////////////////////////////////////////////////////////
+
+#if 0
 
         __shared__ unsigned char E0Array[npolarizations][n][k / 2],
             E1Array[npolarizations][n][k / 2];
@@ -165,17 +167,15 @@ __global__ void form_beams(ucomplex4 *restrict const Jarray,
             for (size_t t1 = 0; t1 < n; ++t1) {
               for (size_t d1 = 0; d1 < k / 2; ++d1) {
                 ucomplex4 E0 =
-                    Earray[Elinear(t + t1, f, d + d1 + 0 * k / 2, p, 0) / 2];
+                    Earray[Elinear(t + t1, f, d + d1 + 0 * k / ncomplex, p, 0) / 2];
                 ucomplex4 E1 =
-                    Earray[Elinear(t + t1, f, d + d1 + 1 * k / 2, p, 0) / 2];
+                    Earray[Elinear(t + t1, f, d + d1 + 1 * k / ncomplex, p, 0) / 2];
                 E0Array[p][t1][d1] = E0.data;
                 E1Array[p][t1][d1] = E1.data;
               }
             }
           }
         }
-
-#if 0
 
         __shared__ unsigned char EreArray[npolarizations][n][k / 2],
             EimArray[npolarizations][n][k / 2];
@@ -194,7 +194,7 @@ __global__ void form_beams(ucomplex4 *restrict const Jarray,
         }
 
         // E[time][dish]
-        // wmma::B[k][n]   (must be row major)
+        // wmma::B[k][n]   (must be column major)
         fragment<wmma::matrix_b, m, n, k, experimental::precision::s4,
                  col_major>
             Ere[npolarizations], Eim[npolarizations];
@@ -206,13 +206,100 @@ __global__ void form_beams(ucomplex4 *restrict const Jarray,
 #else
 
         // E[time][dish]
-        // wmma::B[k][n]   (must be row major)
+        // wmma::B[k][n]   (must column major)
         fragment<wmma::matrix_b, m, n, k, experimental::precision::s4,
                  col_major>
-            E0[npolarizations], E1[npolarizations];
-        for (size_t p = 0; p < npolarizations; ++p) {
-          load_matrix_sync(E0[p], &E0Array[p][0][0], k);
-          load_matrix_sync(E1[p], &E1Array[p][0][0], k);
+            E[ncomplex][npolarizations];
+        for (size_t c = 0; c < ncomplex; ++c) {
+          for (size_t p = 0; p < npolarizations; ++p) {
+            load_matrix_sync(
+                E[c][p],
+                &Earray[Elinear(t, f, d + (2 * c + p) * k / 4, 0, 0) / 2],
+                nfrequencies * ndishes * npolarizations * ncomplex);
+          }
+        }
+        // We have:
+        //   [L]E[c][p] = t=L/4, d=10c+8p+2(L%4)+j/2, p=j%2
+        // Example:
+        //   [0]E[0][p] = t=0, d=8p+0+j/2, p=j%2
+        //   [1]E[0][p] = t=0, d=8p+2+j/2, p=j%2
+        //   [2]E[0][p] = t=0, d=8p+4+j/2, p=j%2
+        //   [3]E[0][p] = t=0, d=8p+6+j/2, p=j%2
+        // Example:
+        //   [0]E[0][p] = [d=8p+1,p=1   d=8p+1,p=0   d=8p+0,p=1   d=8p+0,p=0]
+        //   [1]E[0][p] = [d=8p+3,p=1   d=8p+3,p=0   d=8p+2,p=1   d=8p+2,p=0]
+        //   [2]E[0][p] = [d=8p+5,p=1   d=8p+5,p=0   d=8p+4,p=1   d=8p+4,p=0]
+        //   [3]E[0][p] = [d=8p+7,p=1   d=8p+7,p=0   d=8p+6,p=1   d=8p+6,p=0]
+        // Destination lanes:
+        //   [0]E[0][0] = [0 0 0 0]
+        //   [0]E[0][1] = [2 2 2 2]
+        //   [1]E[0][0] = [0 0 0 0]
+        //   [1]E[0][1] = [2 2 2 2]
+        //   [2]E[0][0] = [1 1 1 1]
+        //   [2]E[0][1] = [3 3 3 3]
+        //   [3]E[0][0] = [1 1 1 1]
+        //   [3]E[0][1] = [3 3 3 3]
+
+        // We need:
+        //   [L]E[c][p] = t=L/4, d=10c+4(L%4)+j, p=p
+        // Example:
+        //   [0]E[0][p] = t=0, d=0+j, p=p
+        //   [1]E[0][p] = t=0, d=4+j, p=p
+        //   [2]E[0][p] = t=0, d=8+j, p=p
+        //   [3]E[0][p] = t=0, d=c+j, p=p
+        // Example:
+        //   [0]E[0][p] = [d=3   d=2   d=1   d=0]
+        //   [1]E[0][p] = [d=7   d=6   d=5   d=4]
+        //   [2]E[0][p] = [d=b   d=a   d=9   d=8]
+        //   [3]E[0][p] = [d=f   d=e   d=d   d=c]
+
+        // We need to shuffle data within groups of 4 lanes to separate the
+        // polarizations
+        fragment<wmma::matrix_b, m, n, k, experimental::precision::s4,
+                 col_major>
+            Ep[ncomplex][npolarizations];
+        const int32_t L = threadIdx.x & 0x03;
+        for (size_t c = 0; c < ncomplex; ++c) {
+          for (size_t i = 0; i < E[c][0].num_storage_elements; ++i) {
+            switch (L) {
+            case 0: {
+              int32_t E_L0_c0 = E[c][0].x[i];
+              int32_t E_L0_c1 = E[c][1].x[i];
+              int32_t E_L2_c0 = __shfl_xor_sync(0xffffffffU, E_L0_c1, 0x02);
+              int32_t E_L1_c0 = __shfl_xor_sync(0xffffffffU, E_L2_c0, 0x01);
+              Ep[c][0].x[i] = __byte_perm(E_L0_c0, E_L1_c0, 0x6420);
+              Ep[c][1].x[i] = __byte_perm(E_L0_c0, E_L1_c0, 0x7531);
+              break;
+            }
+            case 1: {
+              int32_t E_L1_c0 = E[c][0].x[i];
+              int32_t E_L1_c1 = E[c][1].x[i];
+              int32_t E_L3_c0 = __shfl_xor_sync(0xffffffffU, E_L1_c1, 0x02);
+              int32_t E_L2_c0 = __shfl_xor_sync(0xffffffffU, E_L1_c0, 0x01);
+              Ep[c][0].x[i] = __byte_perm(E_L2_c0, E_L3_c0, 0x6420);
+              Ep[c][1].x[i] = __byte_perm(E_L2_c0, E_L3_c0, 0x7531);
+              break;
+            }
+            case 2: {
+              int32_t E_L2_c0 = E[c][0].x[i];
+              int32_t E_L2_c1 = E[c][1].x[i];
+              int32_t E_L0_c1 = __shfl_xor_sync(0xffffffffU, E_L2_c0, 0x02);
+              int32_t E_L1_c1 = __shfl_xor_sync(0xffffffffU, E_L2_c1, 0x01);
+              Ep[c][0].x[i] = __byte_perm(E_L0_c1, E_L1_c1, 0x6420);
+              Ep[c][1].x[i] = __byte_perm(E_L0_c1, E_L1_c1, 0x7531);
+              break;
+            }
+            case 3: {
+              int32_t E_L3_c0 = E[c][0].x[i];
+              int32_t E_L3_c1 = E[c][1].x[i];
+              int32_t E_L1_c1 = __shfl_xor_sync(0xffffffffU, E_L3_c0, 0x02);
+              int32_t E_L2_c1 = __shfl_xor_sync(0xffffffffU, E_L1_c1, 0x01);
+              Ep[c][0].x[i] = __byte_perm(E_L2_c1, E_L3_c1, 0x6420);
+              Ep[c][1].x[i] = __byte_perm(E_L2_c1, E_L3_c1, 0x7531);
+              break;
+            }
+            }
+          }
         }
 
         // E[time][dish]
@@ -223,8 +310,10 @@ __global__ void form_beams(ucomplex4 *restrict const Jarray,
         for (size_t p = 0; p < npolarizations; ++p) {
           static_assert(Ere[p].num_storage_elements == 1, "");
           for (int i = 0; i < Ere[0].num_storage_elements; ++i) {
-            Ere[p].x[i] = extract_real(E0[p].x[i], E1[p].x[i]) ^ 0x88888888U;
-            Eim[p].x[i] = extract_imag(E0[p].x[i], E1[p].x[i]) ^ 0x88888888U;
+            Ere[p].x[i] =
+                extract_real(Ep[0][p].x[i], Ep[1][p].x[i]) ^ 0x88888888U;
+            Eim[p].x[i] =
+                extract_imag(Ep[0][p].x[i], Ep[1][p].x[i]) ^ 0x88888888U;
           }
         }
 
