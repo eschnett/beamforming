@@ -291,7 +291,8 @@ int main(int argc, char **argv) {
   const int m = 8;
   const int n = 8;
   const dim3 numBlocks(nfrequencies);
-  const dim3 threadsPerBlock(m / 2, n, 16); // 16 seems optimal
+  // const dim3 threadsPerBlock(m / 2, n, 16); // 16 seems optimal
+  const dim3 threadsPerBlock(m / 2, n, 12);
   form_beams<<<numBlocks, threadsPerBlock>>>(Jarray2, Earray2, Aarray2, Garray2);
   err = cudaGetLastError();
   CHECK_RESULT(err);
