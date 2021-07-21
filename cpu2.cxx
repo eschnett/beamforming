@@ -2,6 +2,7 @@
 // Beamforming with CUDA's memory layout
 
 #include "adler32.h"
+#include "arraysizes.hxx"
 #include "icomplex4.hxx"
 
 #include <cassert>
@@ -23,29 +24,22 @@ using namespace std;
 // G[frequency][beam][polarization][complex]
 
 constexpr size_t Esize1 = Esize;
-constexpr size_t Elinear1(size_t t, size_t f, size_t d, size_t p, size_t c) {
-  return Elinear(t, f, d, p, c);
-}
+constexpr size_t Elinear1(size_t t, size_t f, size_t d, size_t p, size_t c) { return Elinear(t, f, d, p, c); }
 
-constexpr size_t Jsize1 =
-    ntimes * nfrequencies * nbeams * npolarizations * ncomplex;
+constexpr size_t Jsize1 = ntimes * nfrequencies * nbeams * npolarizations * ncomplex;
 constexpr size_t Jlinear1(size_t t, size_t f, size_t b, size_t p, size_t c) {
   assert(t < ntimes);
   assert(f < nfrequencies);
   assert(b < nbeams);
   assert(p < npolarizations);
   assert(c < ncomplex);
-  const auto ind =
-      c +
-      ncomplex * (p + npolarizations * (b + nbeams * (f + nfrequencies * t)));
+  const auto ind = c + ncomplex * (p + npolarizations * (b + nbeams * (f + nfrequencies * t)));
   assert(ind < Jsize1);
   return ind;
 }
 
-constexpr size_t Asize1 = nfrequencies * nbeams * npolarizations * ncomplex *
-                          ndishes * npolarizations * ncomplex;
-constexpr size_t Alinear1(size_t f, size_t b, size_t p1, size_t c1, size_t d,
-                          size_t p2, size_t c2) {
+constexpr size_t Asize1 = nfrequencies * nbeams * npolarizations * ncomplex * ndishes * npolarizations * ncomplex;
+constexpr size_t Alinear1(size_t f, size_t b, size_t p1, size_t c1, size_t d, size_t p2, size_t c2) {
   assert(f < nfrequencies);
   assert(b < nbeams);
   assert(p1 < npolarizations);
@@ -54,12 +48,7 @@ constexpr size_t Alinear1(size_t f, size_t b, size_t p1, size_t c1, size_t d,
   assert(p2 < npolarizations);
   assert(c2 < ncomplex);
   const auto ind =
-      c2 +
-      ncomplex *
-          (p2 +
-           npolarizations *
-               (d + ndishes * (c1 + ncomplex * (p1 + npolarizations *
-                                                         (b + nbeams * f)))));
+      c2 + ncomplex * (p2 + npolarizations * (d + ndishes * (c1 + ncomplex * (p1 + npolarizations * (b + nbeams * f)))));
   assert(ind < Asize1);
   return ind;
 }
@@ -211,18 +200,15 @@ void restore_J(vector<ucomplex4> &Jarray, const vector<ucomplex4> &Jarray1) {
     for (size_t f = 0; f < nfrequencies; ++f) {
       for (size_t p = 0; p < npolarizations; ++p) {
         for (size_t t = 0; t < ntimes; ++t) {
-          Jarray[Jlinear(b, f, p, t, 0) / 2] =
-              Jarray1[Jlinear1(t, f, b, p, 0) / 2];
+          Jarray[Jlinear(b, f, p, t, 0) / 2] = Jarray1[Jlinear1(t, f, b, p, 0) / 2];
         }
       }
     }
   }
 }
 
-void form_beams(unsigned char *restrict const Jarray,
-                const unsigned char *restrict const Earray,
-                const unsigned char *restrict const Aarray,
-                const float *restrict Garray) {
+void form_beams(unsigned char *restrict const Jarray, const unsigned char *restrict const Earray,
+                const unsigned char *restrict const Aarray, const float *restrict Garray) {
   // This is the array layout. Having the polarization inside requires
   // making A four times as large, and doubles the number of floating
   // point operations. Avoiding this requires changing the memory
@@ -249,8 +235,7 @@ void form_beams(unsigned char *restrict const Jarray,
           //     d + ndishes * npolarizations * ncomplex *
           //             (b + nbeams * npolarizations * ncomplex * f);
           // assert(Aindex < Asize1);
-          const unsigned int Aindex =
-              Alinear1(f, b / 4, (b / 2) % 2, b % 2, d / 4, (d / 2) % 2, d % 2);
+          const unsigned int Aindex = Alinear1(f, b / 4, (b / 2) % 2, b % 2, d / 4, (d / 2) % 2, d % 2);
           const ucomplex4 *const Aptr = (const ucomplex4 *)&Aarray[Aindex / 2];
           const signed char A = (*Aptr)[Aindex % 2];
 
@@ -279,8 +264,7 @@ void form_beams(unsigned char *restrict const Jarray,
         // const unsigned int Glinear = b + nbeams * npolarizations *
         // ncomplex * f; assert(Gindex < Gsize);
         const unsigned int Gindex = Glinear1(f, b / 4, (b / 2) % 2, b % 2);
-        const int Jint =
-            min(7, max(-7, int(lrintf(Garray[Gindex] * float(rawJ)))));
+        const int Jint = min(7, max(-7, int(lrintf(Garray[Gindex] * float(rawJ)))));
 
         // Assemble 4-bit complex number
         // const unsigned char Juchar = Jint + 8;
@@ -289,9 +273,8 @@ void form_beams(unsigned char *restrict const Jarray,
         const unsigned int Jindex = Jlinear1(t, f, b / 4, (b / 2) % 2, b % 2);
         assert(Jindex < Jsize);
         unsigned char *const Jptr = &Jarray[Jindex / 2];
-        *(ucomplex4 *)Jptr =
-            ucomplex4(Jindex % 2 == 1 ? J : ((const ucomplex4 *)Jptr)->real(),
-                      Jindex % 2 == 0 ? J : ((const ucomplex4 *)Jptr)->imag());
+        *(ucomplex4 *)Jptr = ucomplex4(Jindex % 2 == 1 ? J : ((const ucomplex4 *)Jptr)->real(),
+                                       Jindex % 2 == 0 ? J : ((const ucomplex4 *)Jptr)->imag());
       }
     }
   }
@@ -314,9 +297,8 @@ int main(int argc, char **argv) {
   vector<ucomplex4> Jarray1 = prepare_J(Jarray);
 
   cout << "Forming beams...\n";
-  form_beams((unsigned char *)Jarray1.data(),
-             (const unsigned char *)Earray1.data(),
-             (const unsigned char *)Aarray1.data(), Garray1.data());
+  form_beams((unsigned char *)Jarray1.data(), (const unsigned char *)Earray1.data(), (const unsigned char *)Aarray1.data(),
+             Garray1.data());
 
   // Undo layout modification
   restore_J(Jarray, Jarray1);

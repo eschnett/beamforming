@@ -25,8 +25,7 @@ constexpr int k = 32;
 // C[m][n]   row major
 // C[m][n] += A[m][k] * B[k][n]
 
-__global__ void matmul(int *restrict const Cptr,
-                       const unsigned char *restrict const Aptr,
+__global__ void matmul(int *restrict const Cptr, const unsigned char *restrict const Aptr,
                        const unsigned char *restrict const Bptr) {
   fragment<wmma::accumulator, m, n, k, int> C;
   // fill_fragment(C, 0);
@@ -49,8 +48,8 @@ __global__ void matmul(int *restrict const Cptr,
 #define CHECK_RESULT(err) check_result(__FILE__, __LINE__, err)
 void check_result(const char *file, int line, cudaError_t err) {
   if (err != cudaSuccess) {
-    cerr << file << ":" << line << ": CUDA error " << err << ": "
-         << cudaGetErrorName(err) << ": " << cudaGetErrorString(err) << "\n";
+    cerr << file << ":" << line << ": CUDA error " << err << ": " << cudaGetErrorName(err) << ": " << cudaGetErrorString(err)
+         << "\n";
     exit(1);
   }
 }
@@ -134,16 +133,13 @@ int main(int argc, char **argv) {
 
   unsigned char *Aptr = nullptr;
   cudaMalloc(&Aptr, Avec.size() * sizeof *Avec.data());
-  cudaMemcpy(Aptr, Avec.data(), Avec.size() * sizeof *Avec.data(),
-             cudaMemcpyHostToDevice);
+  cudaMemcpy(Aptr, Avec.data(), Avec.size() * sizeof *Avec.data(), cudaMemcpyHostToDevice);
   unsigned char *Bptr = nullptr;
   cudaMalloc(&Bptr, Bvec.size() * sizeof *Bvec.data());
-  cudaMemcpy(Bptr, Bvec.data(), Bvec.size() * sizeof *Bvec.data(),
-             cudaMemcpyHostToDevice);
+  cudaMemcpy(Bptr, Bvec.data(), Bvec.size() * sizeof *Bvec.data(), cudaMemcpyHostToDevice);
   int *Cptr = nullptr;
   cudaMalloc(&Cptr, Cvec.size() * sizeof *Cvec.data());
-  cudaMemcpy(Cptr, Cvec.data(), Cvec.size() * sizeof *Cvec.data(),
-             cudaMemcpyHostToDevice);
+  cudaMemcpy(Cptr, Cvec.data(), Cvec.size() * sizeof *Cvec.data(), cudaMemcpyHostToDevice);
 
   cudaError_t err = cudaGetLastError();
   CHECK_RESULT(err);
@@ -159,8 +155,7 @@ int main(int argc, char **argv) {
 
   cudaFree(Aptr);
   cudaFree(Bptr);
-  cudaMemcpy(Cvec.data(), Cptr, Cvec.size() * sizeof *Cvec.data(),
-             cudaMemcpyDeviceToHost);
+  cudaMemcpy(Cvec.data(), Cptr, Cvec.size() * sizeof *Cvec.data(), cudaMemcpyDeviceToHost);
   cudaFree(Cptr);
 
   cout << "C:\n";

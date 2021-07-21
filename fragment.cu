@@ -53,14 +53,10 @@ __global__ void matmul2(int *restrict const Cptr) {
   // Set fragment
   static_assert(A.num_elements == 8 * A.num_storage_elements, "");
   for (int t = 0; t < A.num_storage_elements; ++t)
-    A.x[t] = (((8 * threadIdx.x + 7) & 0x0f) << 0x1c) |
-             (((8 * threadIdx.x + 6) & 0x0f) << 0x18) |
-             (((8 * threadIdx.x + 5) & 0x0f) << 0x14) |
-             (((8 * threadIdx.x + 4) & 0x0f) << 0x10) |
-             (((8 * threadIdx.x + 3) & 0x0f) << 0x0c) |
-             (((8 * threadIdx.x + 2) & 0x0f) << 0x08) |
-             (((8 * threadIdx.x + 1) & 0x0f) << 0x04) |
-             (((8 * threadIdx.x + 0) & 0x0f) << 0x00);
+    A.x[t] = (((8 * threadIdx.x + 7) & 0x0f) << 0x1c) | (((8 * threadIdx.x + 6) & 0x0f) << 0x18) |
+             (((8 * threadIdx.x + 5) & 0x0f) << 0x14) | (((8 * threadIdx.x + 4) & 0x0f) << 0x10) |
+             (((8 * threadIdx.x + 3) & 0x0f) << 0x0c) | (((8 * threadIdx.x + 2) & 0x0f) << 0x08) |
+             (((8 * threadIdx.x + 1) & 0x0f) << 0x04) | (((8 * threadIdx.x + 0) & 0x0f) << 0x00);
 
   fragment<wmma::matrix_b, m, n, k, experimental::precision::s4, col_major> B;
   // Set fragment
@@ -75,8 +71,8 @@ __global__ void matmul2(int *restrict const Cptr) {
 #define CHECK_RESULT(err) check_result(__FILE__, __LINE__, err)
 void check_result(const char *file, int line, cudaError_t err) {
   if (err != cudaSuccess) {
-    cerr << file << ":" << line << ": CUDA error " << err << ": "
-         << cudaGetErrorName(err) << ": " << cudaGetErrorString(err) << "\n";
+    cerr << file << ":" << line << ": CUDA error " << err << ": " << cudaGetErrorName(err) << ": " << cudaGetErrorString(err)
+         << "\n";
     exit(1);
   }
 }
@@ -93,8 +89,7 @@ int main(int argc, char **argv) {
 
   int *Cptr = nullptr;
   cudaMalloc(&Cptr, Cvec.size() * sizeof *Cvec.data());
-  cudaMemcpy(Cptr, Cvec.data(), Cvec.size() * sizeof *Cvec.data(),
-             cudaMemcpyHostToDevice);
+  cudaMemcpy(Cptr, Cvec.data(), Cvec.size() * sizeof *Cvec.data(), cudaMemcpyHostToDevice);
 
   cudaError_t err = cudaGetLastError();
   CHECK_RESULT(err);
@@ -108,8 +103,7 @@ int main(int argc, char **argv) {
   err = cudaGetLastError();
   CHECK_RESULT(err);
 
-  cudaMemcpy(Cvec.data(), Cptr, Cvec.size() * sizeof *Cvec.data(),
-             cudaMemcpyDeviceToHost);
+  cudaMemcpy(Cvec.data(), Cptr, Cvec.size() * sizeof *Cvec.data(), cudaMemcpyDeviceToHost);
   cudaFree(Cptr);
 
   cout << "C:\n";

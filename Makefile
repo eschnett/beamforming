@@ -12,13 +12,15 @@ CUFLAGS = -std=c++17 --compiler-options -std=c++17 -Drestrict=__restrict__ --gpu
 
 all: cpu cpu2
 
-cpu: adler32.o cpu.o icomplex4.o
+cpu: adler32.o cpu.o arraysizes.o
 	$(CXX) $(CXXFLAGS) -o $@ $^
-cpu2: adler32.o cpu2.o icomplex4.o
+cpu2: adler32.o cpu2.o arraysizes.o
 	$(CXX) $(CXXFLAGS) -o $@ $^
-cuda: adler32.o cuda.o icomplex4.o
+cuda: adler32.o cuda.o arraysizes.o
 	$(CU) $(CUFLAGS) -o $@ $^
-cuda2: adler32.o cuda2.o icomplex4.o
+cuda2: adler32.o cuda2.o arraysizes.o
+	$(CU) $(CUFLAGS) -o $@ $^
+cuda3: adler32.o cuda3.o arraysizes.o
 	$(CU) $(CUFLAGS) -o $@ $^
 fragment: fragment.o
 	$(CU) $(CUFLAGS) -o $@ $^
@@ -33,18 +35,31 @@ matmul: matmul.o
 	$(CU) $(CUFLAGS) -c $*.cu
 
 adler32.o: adler32.h
-cpu.o: icomplex4.hxx
-cpu2.o: icomplex4.hxx
-cuda.o: adler32.h
-cuda2.o: adler32.h
+cpu.o: arraysizes.hxx icomplex4.hxx
+cpu2.o: arraysizes.hxx icomplex4.hxx
+cuda.o: adler32.h arraysizes.hxx icomplex4.hxx
+cuda2.o: adler32.h arraysizes.hxx icomplex4.hxx
+cuda3.o: adler32.h arraysizes.hxx icomplex4.hxx
 fragment.o:
 matmul.o:
-icomplex4.o: adler32.h icomplex4.hxx
+arraysizes.o: adler32.h arraysizes.hxx icomplex4.hxx
 
 format:
-	clang-format -i adler32.h adler32.c cpu.cxx cpu2.cxx cuda.cu cuda2.cu icomplex4.cxx icomplex4.hxx fragment.cu matmul.cu
+	clang-format -i				\
+		adler32.c			\
+		adler32.h			\
+		arraysizes.cxx			\
+		arraysizes.hxx			\
+		cpu.cxx				\
+		cpu2.cxx			\
+		cuda.cu				\
+		cuda2.cu			\
+		cuda3.cu			\
+		fragment.cu			\
+		icomplex4.hxx			\
+		matmul.cu
 clean:
-	rm -f cpu cpu2 cuda cuda2 fragment matmul
-	rm -f adler32.o cpu.o cpu2.o cuda.o cuda2.o icomplex4.o fragment.o matmul.o
+	rm -f cpu cpu2 cuda cuda2 cuda3 fragment matmul
+	rm -f adler32.o arraysizes.o cpu.o cpu2.o cuda.o cuda2.o cuda3.o fragment.o matmul.o
 
 .PHONY: all format clean

@@ -1,20 +1,11 @@
-#include "icomplex4.hxx"
+#include "arraysizes.hxx"
 #include "adler32.h"
-
-#include <sys/time.h>
 
 #include <cstdlib>
 #include <iomanip>
 #include <iostream>
 
-double gettime() {
-  timeval tv;
-  gettimeofday(&tv, nullptr);
-  return tv.tv_sec + tv.tv_usec / 1.0e+6;
-}
-
-void setup(vector<ucomplex4> &Earray, vector<ucomplex4> &Aarray,
-           vector<float> &Garray, vector<ucomplex4> &Jarray) {
+void setup(vector<ucomplex4> &Earray, vector<ucomplex4> &Aarray, vector<float> &Garray, vector<ucomplex4> &Jarray) {
   cout << "Setting up input data...\n";
 
   Earray.resize(Esize / 2);
@@ -60,11 +51,12 @@ void setup(vector<ucomplex4> &Earray, vector<ucomplex4> &Aarray,
   //     Garray.at(Glinear(f, b)) = 1;
 }
 
-constexpr uint32_t correct_checksum = ntimes == 32768 ? 0x4de6498f
-                                      : ntimes == 32  ? 0xab69dfee
-                                      : ntimes == 8   ? 0x3a3344bc
-                                      : ntimes == 1   ? 0x019a0111
-                                                      : 0;
+constexpr uint32_t correct_checksum = ntimes == 32768 && nbeams == 128  ? 0x4de6498f
+                                      : ntimes == 32768 && nbeams == 96 ? 0xc4fb6a4c
+                                      : ntimes == 32                    ? 0xab69dfee
+                                      : ntimes == 8                     ? 0x3a3344bc
+                                      : ntimes == 1                     ? 0x019a0111
+                                                                        : 0;
 
 void check(const vector<ucomplex4> &Jarray) {
   // for (size_t b = 0; b < nbeams; ++b) {
@@ -83,13 +75,11 @@ void check(const vector<ucomplex4> &Jarray) {
 
   cout << "Calculating checksum...\n";
 
-  uint32_t checksum = adler32(
-      reinterpret_cast<const unsigned char *>(Jarray.data()), Jarray.size());
+  uint32_t checksum = adler32(reinterpret_cast<const unsigned char *>(Jarray.data()), Jarray.size());
   cout << "Checksum: 0x" << hex << setfill('0') << setw(8) << checksum << "\n";
 
   if (checksum != correct_checksum) {
-    cout << "Expected: 0x" << hex << setfill('0') << setw(8) << correct_checksum
-         << "\n";
+    cout << "Expected: 0x" << hex << setfill('0') << setw(8) << correct_checksum << "\n";
     cout << "ERROR -- CHECKSUM MISMATCH\n";
     exit(1);
   }

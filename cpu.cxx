@@ -1,5 +1,6 @@
 // Beamforming on the CPU
 
+#include "arraysizes.hxx"
 #include "icomplex4.hxx"
 
 #include <algorithm>
@@ -11,9 +12,7 @@
 
 using namespace std;
 
-void form_beams(ucomplex4 *restrict const Jarray,
-                const ucomplex4 *restrict const Earray,
-                const ucomplex4 *restrict const Aarray,
+void form_beams(ucomplex4 *restrict const Jarray, const ucomplex4 *restrict const Earray, const ucomplex4 *restrict const Aarray,
                 const float *restrict Garray) {
 
 #pragma omp parallel for

@@ -2,6 +2,7 @@
 // Beamforming with CUDA
 
 #include "adler32.h"
+#include "arraysizes.hxx"
 #include "icomplex4.hxx"
 
 #include <mma.h>
@@ -31,10 +32,8 @@ __device__ int32_t extract_imag(const int32_t x0, const int32_t x1) {
   return (x0 & 0x0f0f0f0fU) | ((uint32_t)(x1 & 0x0f0f0f0fU) << 4);
 }
 
-__global__ void form_beams(ucomplex4 *restrict const Jarray,
-                           const ucomplex4 *restrict const Earray,
-                           const ucomplex4 *restrict const Aarray,
-                           const float *restrict Garray) {
+__global__ void form_beams(ucomplex4 *restrict const Jarray, const ucomplex4 *restrict const Earray,
+                           const ucomplex4 *restrict const Aarray, const float *restrict Garray) {
   // operation:    D = A * B + C
   // matrix sizes: C, D: [m,n]
   //               A:    [m,k]   (row major)
@@ -84,8 +83,7 @@ __global__ void form_beams(ucomplex4 *restrict const Jarray,
 
       // rawJ[2]
       // rawJ[2][m][n] = rawJ[polarization][beam][time]
-      fragment<wmma::accumulator, m, n, k, int32_t> rawJre[npolarizations],
-          rawJreNeg[npolarizations], rawJim[npolarizations];
+      fragment<wmma::accumulator, m, n, k, int32_t> rawJre[npolarizations], rawJreNeg[npolarizations], rawJim[npolarizations];
       for (size_t p = 0; p < npolarizations; ++p) {
         fill_fragment(rawJre[p], 0);
         fill_fragment(rawJreNeg[p], 0);
@@ -96,128 +94,31 @@ __global__ void form_beams(ucomplex4 *restrict const Jarray,
 
         ////////////////////////////////////////////////////////////////////////////////
 
-#if 0
-
-        __shared__ unsigned char A0Array[m][k / 2], A1Array[m][k / 2];
-        if (threadIdx.x == 0 && threadIdx.y == 0 && threadIdx.z == 0) {
-          for (size_t b1 = 0; b1 < m; ++b1) {
-            for (size_t d1 = 0; d1 < k / 2; ++d1) {
-              ucomplex4 A0 =
-                  Aarray[Alinear(f, b + b1, d + d1 + 0 * k / 2, 0) / 2];
-              ucomplex4 A1 =
-                  Aarray[Alinear(f, b + b1, d + d1 + 1 * k / 2, 0) / 2];
-              A0Array[b1][d1] = A0.data;
-              A1Array[b1][d1] = A1.data;
-            }
-          }
-        }
-
-        __shared__ unsigned char AreArray[m][k / 2], AimArray[m][k / 2];
-        if (threadIdx.x == 0 && threadIdx.y == 0 && threadIdx.z == 0) {
-          for (size_t b1 = 0; b1 < m; ++b1) {
-            for (size_t d1 = 0; d1 < k / 2; ++d1) {
-              ucomplex4 A0, A1;
-              A0.data = A0Array[b1][d1];
-              A1.data = A1Array[b1][d1];
-              AreArray[b1][d1] = icomplex4(A1.real(), A0.real()).data;
-              AimArray[b1][d1] = icomplex4(A1.imag(), A0.imag()).data;
-            }
-          }
-        }
-
         // A[beam][dish]
         // wmma::A[m][k]   (must be row major)
-        fragment<wmma::matrix_a, m, n, k, experimental::precision::s4,
-                 row_major>
-            Are, Aim;
-        load_matrix_sync(Are, &AreArray[0][0], k);
-        load_matrix_sync(Aim, &AimArray[0][0], k);
-
-#else
-
-        // A[beam][dish]
-        // wmma::A[m][k]   (must be row major)
-        fragment<wmma::matrix_a, m, n, k, experimental::precision::s4,
-                 row_major>
-            A[ncomplex];
+        fragment<wmma::matrix_a, m, n, k, experimental::precision::s4, row_major> A[ncomplex];
         for (size_t c = 0; c < ncomplex; ++c) {
-          load_matrix_sync(A[c], &Aarray[Alinear(f, b, d + c * k / 2, 0) / 2],
-                           ndishes * ncomplex);
+          load_matrix_sync(A[c], &Aarray[Alinear(f, b, d + c * k / 2, 0) / 2], ndishes * ncomplex);
         }
 
         // A[beam][dish]
         // wmma::A[m][k]   (must be row major)
-        fragment<wmma::matrix_a, m, n, k, experimental::precision::s4,
-                 row_major>
-            Are, Aim;
+        fragment<wmma::matrix_a, m, n, k, experimental::precision::s4, row_major> Are, Aim;
         static_assert(Are.num_storage_elements == 1, "");
         for (int i = 0; i < Are.num_storage_elements; ++i) {
           Are.x[i] = extract_real(A[0].x[i], A[1].x[i]) ^ 0x88888888U;
           Aim.x[i] = extract_imag(A[0].x[i], A[1].x[i]) ^ 0x88888888U;
         }
 
-#endif
-
         ////////////////////////////////////////////////////////////////////////////////
-
-#if 0
-
-        __shared__ unsigned char E0Array[npolarizations][n][k / 2],
-            E1Array[npolarizations][n][k / 2];
-        if (threadIdx.x == 0 && threadIdx.y == 0 && threadIdx.z == 0) {
-          for (size_t p = 0; p < npolarizations; ++p) {
-            for (size_t t1 = 0; t1 < n; ++t1) {
-              for (size_t d1 = 0; d1 < k / 2; ++d1) {
-                ucomplex4 E0 =
-                    Earray[Elinear(t + t1, f, d + d1 + 0 * k / ncomplex, p, 0) / 2];
-                ucomplex4 E1 =
-                    Earray[Elinear(t + t1, f, d + d1 + 1 * k / ncomplex, p, 0) / 2];
-                E0Array[p][t1][d1] = E0.data;
-                E1Array[p][t1][d1] = E1.data;
-              }
-            }
-          }
-        }
-
-        __shared__ unsigned char EreArray[npolarizations][n][k / 2],
-            EimArray[npolarizations][n][k / 2];
-        if (threadIdx.x == 0 && threadIdx.y == 0 && threadIdx.z == 0) {
-          for (size_t p = 0; p < npolarizations; ++p) {
-            for (size_t t1 = 0; t1 < n; ++t1) {
-              for (size_t d1 = 0; d1 < k / 2; ++d1) {
-                ucomplex4 E0, E1;
-                E0.data = E0Array[p][t1][d1];
-                E1.data = E1Array[p][t1][d1];
-                EreArray[p][t1][d1] = icomplex4(E1.real(), E0.real()).data;
-                EimArray[p][t1][d1] = icomplex4(E1.imag(), E0.imag()).data;
-              }
-            }
-          }
-        }
-
-        // E[time][dish]
-        // wmma::B[k][n]   (must be column major)
-        fragment<wmma::matrix_b, m, n, k, experimental::precision::s4,
-                 col_major>
-            Ere[npolarizations], Eim[npolarizations];
-        for (size_t p = 0; p < npolarizations; ++p) {
-          load_matrix_sync(Ere[p], &EreArray[p][0][0], k);
-          load_matrix_sync(Eim[p], &EimArray[p][0][0], k);
-        }
-
-#else
 
         // E[time][dish]
         // wmma::B[k][n]   (must column major)
-        fragment<wmma::matrix_b, m, n, k, experimental::precision::s4,
-                 col_major>
-            E[ncomplex][npolarizations];
+        fragment<wmma::matrix_b, m, n, k, experimental::precision::s4, col_major> E[ncomplex][npolarizations];
         for (size_t c = 0; c < ncomplex; ++c) {
           for (size_t p = 0; p < npolarizations; ++p) {
-            load_matrix_sync(
-                E[c][p],
-                &Earray[Elinear(t, f, d + (2 * c + p) * k / 4, 0, 0) / 2],
-                nfrequencies * ndishes * npolarizations * ncomplex);
+            load_matrix_sync(E[c][p], &Earray[Elinear(t, f, d + (2 * c + p) * k / 4, 0, 0) / 2],
+                             nfrequencies * ndishes * npolarizations * ncomplex);
           }
         }
         // We have:
@@ -257,9 +158,7 @@ __global__ void form_beams(ucomplex4 *restrict const Jarray,
 
         // We need to shuffle data within groups of 4 lanes to separate the
         // polarizations
-        fragment<wmma::matrix_b, m, n, k, experimental::precision::s4,
-                 col_major>
-            Ep[ncomplex][npolarizations];
+        fragment<wmma::matrix_b, m, n, k, experimental::precision::s4, col_major> Ep[ncomplex][npolarizations];
         const int32_t L = threadIdx.x & 0x03;
         for (size_t c = 0; c < ncomplex; ++c) {
           for (size_t i = 0; i < E[c][0].num_storage_elements; ++i) {
@@ -305,37 +204,25 @@ __global__ void form_beams(ucomplex4 *restrict const Jarray,
 #else
             int32_t E0 = E[c][0].x[i];
             int32_t E1 = E[c][1].x[i];
-            const auto select4 = [=](int a, int b, int c, int d) {
-              return L == 0 ? a : L == 1 ? b : L == 2 ? c : d;
-            };
-            int32_t E2 =
-                __shfl_xor_sync(0xffffffffU, select4(E1, E1, E0, E0), 0x02);
-            int32_t E3 =
-                __shfl_xor_sync(0xffffffffU, select4(E2, E0, E1, E2), 0x01);
-            Ep[c][0].x[i] = __byte_perm(select4(E0, E3, E2, E3),
-                                        select4(E3, E2, E3, E1), 0x6420);
-            Ep[c][1].x[i] = __byte_perm(select4(E0, E3, E2, E3),
-                                        select4(E3, E2, E3, E1), 0x7531);
+            const auto select4 = [=](int a, int b, int c, int d) { return L == 0 ? a : L == 1 ? b : L == 2 ? c : d; };
+            int32_t E2 = __shfl_xor_sync(0xffffffffU, select4(E1, E1, E0, E0), 0x02);
+            int32_t E3 = __shfl_xor_sync(0xffffffffU, select4(E2, E0, E1, E2), 0x01);
+            Ep[c][0].x[i] = __byte_perm(select4(E0, E3, E2, E3), select4(E3, E2, E3, E1), 0x6420);
+            Ep[c][1].x[i] = __byte_perm(select4(E0, E3, E2, E3), select4(E3, E2, E3, E1), 0x7531);
 #endif
           }
         }
 
         // E[time][dish]
         // wmma::B[k][n]   (must be row major)
-        fragment<wmma::matrix_b, m, n, k, experimental::precision::s4,
-                 col_major>
-            Ere[npolarizations], Eim[npolarizations];
+        fragment<wmma::matrix_b, m, n, k, experimental::precision::s4, col_major> Ere[npolarizations], Eim[npolarizations];
         for (size_t p = 0; p < npolarizations; ++p) {
           static_assert(Ere[p].num_storage_elements == 1, "");
           for (int i = 0; i < Ere[0].num_storage_elements; ++i) {
-            Ere[p].x[i] =
-                extract_real(Ep[0][p].x[i], Ep[1][p].x[i]) ^ 0x88888888U;
-            Eim[p].x[i] =
-                extract_imag(Ep[0][p].x[i], Ep[1][p].x[i]) ^ 0x88888888U;
+            Ere[p].x[i] = extract_real(Ep[0][p].x[i], Ep[1][p].x[i]) ^ 0x88888888U;
+            Eim[p].x[i] = extract_imag(Ep[0][p].x[i], Ep[1][p].x[i]) ^ 0x88888888U;
           }
         }
-
-#endif
 
         ////////////////////////////////////////////////////////////////////////////////
 
@@ -349,52 +236,17 @@ __global__ void form_beams(ucomplex4 *restrict const Jarray,
 
       } // for dish
 
-#if 0
-
-      __shared__ int rawJreArray[npolarizations][m][n],
-          rawJreNegArray[npolarizations][m][n],
-          rawJimArray[npolarizations][m][n];
       for (size_t p = 0; p < npolarizations; ++p) {
-        store_matrix_sync(&rawJreArray[p][0][0], rawJre[p], n, mem_row_major);
-        store_matrix_sync(&rawJreNegArray[p][0][0], rawJreNeg[p], n,
-                          mem_row_major);
-        store_matrix_sync(&rawJimArray[p][0][0], rawJim[p], n, mem_row_major);
-      }
-
-      if (threadIdx.x == 0 && threadIdx.y == 0 && threadIdx.z == 0) {
-        for (size_t b1 = 0; b1 < m; ++b1) {
-          const float G = Garray[Glinear(f, b + b1)];
-          for (size_t p = 0; p < npolarizations; ++p) {
-            for (size_t t1 = 0; t1 < n; ++t1) {
-              int Jre = max(
-                  -7, min(7, int(lrint(G * float(rawJreArray[p][b1][t1] -
-                                                 rawJreNegArray[p][b1][t1])))));
-              int Jim = max(
-                  -7, min(7, int(lrint(G * float(rawJimArray[p][b1][t1])))));
-              Jarray[Jlinear(b + b1, f, p, t + t1, 0) / 2] =
-                  ucomplex4(Jre, Jim);
-            }
-          }
-        }
-      }
-
-#else
-
-      for (size_t p = 0; p < npolarizations; ++p) {
-        static_assert(rawJre[p].num_storage_elements == J_num_storage_elements,
-                      "");
+        static_assert(rawJre[p].num_storage_elements == J_num_storage_elements, "");
         for (int i = 0; i < rawJre[0].num_storage_elements; ++i) {
           const size_t t1 = J_num_storage_elements * threadIdx.x + i;
           const size_t b1 = threadIdx.y;
           const float G = Garray[Glinear(f, b + b1)];
-          int Jre = max(-7, min(7, int(lrint(G * float(rawJre[p].x[i] -
-                                                       rawJreNeg[p].x[i])))));
+          int Jre = max(-7, min(7, int(lrint(G * float(rawJre[p].x[i] - rawJreNeg[p].x[i])))));
           int Jim = max(-7, min(7, int(lrint(G * float(rawJim[p].x[i])))));
           Jarray[Jlinear(b + b1, f, p, t + t1, 0) / 2] = ucomplex4(Jre, Jim);
         }
       }
-
-#endif
 
     } // for time
   }   // for beam
@@ -403,8 +255,8 @@ __global__ void form_beams(ucomplex4 *restrict const Jarray,
 #define CHECK_RESULT(err) check_result(__FILE__, __LINE__, err)
 void check_result(const char *file, int line, cudaError_t err) {
   if (err != cudaSuccess) {
-    cerr << file << ":" << line << ": CUDA error " << err << ": "
-         << cudaGetErrorName(err) << ": " << cudaGetErrorString(err) << "\n";
+    cerr << file << ":" << line << ": CUDA error " << err << ": " << cudaGetErrorName(err) << ": " << cudaGetErrorString(err)
+         << "\n";
     exit(1);
   }
 }
@@ -421,16 +273,13 @@ int main(int argc, char **argv) {
   cout << "Forming beams...\n";
   ucomplex4 *Earray2 = nullptr;
   cudaMalloc(&Earray2, Earray.size() * sizeof(ucomplex4));
-  cudaMemcpy(Earray2, Earray.data(), Earray.size() * sizeof(ucomplex4),
-             cudaMemcpyHostToDevice);
+  cudaMemcpy(Earray2, Earray.data(), Earray.size() * sizeof(ucomplex4), cudaMemcpyHostToDevice);
   ucomplex4 *Aarray2 = nullptr;
   cudaMalloc(&Aarray2, Aarray.size() * sizeof(ucomplex4));
-  cudaMemcpy(Aarray2, Aarray.data(), Aarray.size() * sizeof(ucomplex4),
-             cudaMemcpyHostToDevice);
+  cudaMemcpy(Aarray2, Aarray.data(), Aarray.size() * sizeof(ucomplex4), cudaMemcpyHostToDevice);
   float *Garray2 = nullptr;
   cudaMalloc(&Garray2, Garray.size() * sizeof(float));
-  cudaMemcpy(Garray2, Garray.data(), Garray.size() * sizeof(float),
-             cudaMemcpyHostToDevice);
+  cudaMemcpy(Garray2, Garray.data(), Garray.size() * sizeof(float), cudaMemcpyHostToDevice);
   ucomplex4 *Jarray2 = nullptr;
   cudaMalloc(&Jarray2, Jarray.size() * sizeof(ucomplex4));
 
@@ -443,8 +292,7 @@ int main(int argc, char **argv) {
   const int n = 8;
   const dim3 numBlocks(nfrequencies);
   const dim3 threadsPerBlock(m / 2, n, 16); // 16 seems optimal
-  form_beams<<<numBlocks, threadsPerBlock>>>(Jarray2, Earray2, Aarray2,
-                                             Garray2);
+  form_beams<<<numBlocks, threadsPerBlock>>>(Jarray2, Earray2, Aarray2, Garray2);
   err = cudaGetLastError();
   CHECK_RESULT(err);
   err = cudaDeviceSynchronize();
@@ -462,8 +310,7 @@ int main(int argc, char **argv) {
   Aarray2 = nullptr;
   cudaFree(Garray2);
   Garray2 = nullptr;
-  cudaMemcpy(Jarray.data(), Jarray2, Jarray.size() * sizeof(ucomplex4),
-             cudaMemcpyDeviceToHost);
+  cudaMemcpy(Jarray.data(), Jarray2, Jarray.size() * sizeof(ucomplex4), cudaMemcpyDeviceToHost);
   cudaFree(Jarray2);
   Jarray2 = nullptr;
 
