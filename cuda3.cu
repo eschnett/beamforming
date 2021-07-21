@@ -105,7 +105,7 @@ __device__ void load_A(fragment<wmma::matrix_a, m, n, k, experimental::precision
 
   // These must be true if basic arithmetic holds
   assert(nwarps_for_dishes * ndish_matrices_per_thread * ndishes_per_matrix == ndishes);
-  assert(nwarps_for_beams * nbeam_matrices_per_thread * nbeames_per_matrix == nbeames);
+  assert(nwarps_for_beams * nbeam_matrices_per_thread * nbeams_per_matrix == nbeams);
   const size_t dish0 = dish_warpidx * ndish_matrices_per_thread * ndishes_per_matrix;
   const size_t beam0 = beam_warpidx * nbeam_matrices_per_thread * nbeams_per_matrix;
 
@@ -299,13 +299,28 @@ reduce_to_J(ucomplex4 (&restrict Jshared)[nbeams][ntimes_per_iteration_J + paddi
   }
 }
 
-__device__ void transpose_J(const ucomplex4 (&restrict Jshared)[nbeams][ntimes_per_iteration_J + padding_J][npolarizations],
-                            const size_t time0) {}
+__device__ void transpose_J(ucomplex4 *restrict const Jarray,
+                            const ucomplex4 (&restrict Jshared)[nbeams][ntimes_per_iteration_J + padding_J][npolarizations],
+                            const size_t time0) {
+  const size_t f = blockIdx.x;
+  for (size_t beam0 = 0; beam0 < nbeams; beam0 += nwarps) {
+    const size_t beam_warpindex = threadIdx.y;
+    const size_t polarization_threadindex = threadIdx.x / 16;
+    const size_t time_threadindex = threadIdx.x % 16;
+    const size_t b = beam0 + beam_warpindex;
+    const size_t p = polarization_threadindex;
+    const size_t ti = 2 * time_threadindex;
+    const size_t t = time0 + ti;
+    assert(b < nbeams);
+    Jarray[Jlinear(b, f, p, t, 0) / 2] = Jshared[b][ti][p];
+    Jarray[Jlinear(b, f, p, t + 1, 0) / 2] = Jshared[b][ti + 1][p];
+  }
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 
-__global__ void form_beams(ucomplex4 *restrict const Jarray, const ucomplex4 *restrict const Earray,
-                           const ucomplex4 *restrict const Aarray, const float *restrict const Garray) {
+__global__ void __launch_bounds__(1024, 1) form_beams(ucomplex4 *restrict const Jarray, const ucomplex4 *restrict const Earray,
+                                                      const ucomplex4 *restrict const Aarray, const float *restrict const Garray) {
 
   // Each frequency is transformed independently. We use one thread
   // block per frequency.
@@ -341,7 +356,7 @@ __global__ void form_beams(ucomplex4 *restrict const Jarray, const ucomplex4 *re
     __syncthreads();
 
     if ((time0 + ntimes_per_iteration_Ju) % ntimes_per_iteration_J == 0)
-      transpose_J(Jshared, time0);
+      transpose_J(Jarray, Jshared, time0);
 
   } // for time0
 }
@@ -385,7 +400,7 @@ int main(int argc, char **argv) {
   const int m = 8;
   const int n = 8;
   const dim3 numBlocks(nfrequencies);
-  const dim3 threadsPerBlock(m / 2, n, 16); // 16 seems optimal
+  const dim3 threadsPerBlock(nlanes, nwarps);
   form_beams<<<numBlocks, threadsPerBlock>>>(Jarray2, Earray2, Aarray2, Garray2);
   err = cudaGetLastError();
   CHECK_RESULT(err);
@@ -407,6 +422,13 @@ int main(int argc, char **argv) {
   cudaMemcpy(Jarray.data(), Jarray2, Jarray.size() * sizeof(ucomplex4), cudaMemcpyDeviceToHost);
   cudaFree(Jarray2);
   Jarray2 = nullptr;
+
+  // vector<ucomplex4> Jarray0;
+  // for (size_t b = 0; b < nbeams; ++b)
+  //   for (size_t f = 0; f < nfrequencies; ++f)
+  //     for (size_t p = 0; p < npolarizations; ++p)
+  //       for (size_t t = 0; t < ntimes; ++t)
+  //         Jarray0[Jlinear(b, f, p, t, 0) / 2] = Jarray[J2linear(t, f, b, p, 0) / 2];
 
   check(Jarray);
 
