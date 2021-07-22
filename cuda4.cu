@@ -643,6 +643,25 @@ int main(int argc, char **argv) {
   vector<ucomplex4> J2array;
   setup(Earray, Aarray, Garray, J2array);
 
+  // Change index order
+  vector<ucomplex4> A2array(Aarray.size());
+  // vector<bool> A2mask(Aarray.size());
+  for (size_t f = 0; f < nfrequencies; ++f) {
+    for (size_t b = 0; b < nbeams; ++b) {
+      for (size_t d = 0; d < ndishes; ++d) {
+        for (size_t p = 0; p < npolarizations; ++p) {
+          const size_t d8 = (d >> 8) & 0b1;
+          const size_t d67 = (d >> 6) & 0b11;
+          const size_t d012345 = (d >> 0) & 0b111111;
+          const size_t d_prime = (d8 << 8) | (d012345 << 2) | (d67 << 0);
+          // assert(!A2mask.at(Alinear(f, b, d_prime, 0) / 2));
+          // A2mask.at(Alinear(f, b, d_prime, 0) / 2) = true;
+          A2array.at(Alinear(f, b, d_prime, 0) / 2) = Aarray.at(Alinear(f, b, d, 0) / 2);
+        }
+      }
+    }
+  }
+
   cout << "Forming beams...\n";
   ucomplex4 *Earray2 = nullptr;
   cudaMalloc(&Earray2, Earray.size() * sizeof(ucomplex4));
@@ -685,6 +704,7 @@ int main(int argc, char **argv) {
   cudaFree(J2array2);
   J2array2 = nullptr;
 
+  // Change index order
   vector<ucomplex4> Jarray(J2array.size());
   for (size_t b = 0; b < nbeams; ++b) {
     for (size_t f = 0; f < nfrequencies; ++f) {
