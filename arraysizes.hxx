@@ -9,11 +9,8 @@
 
 using namespace std;
 
-#warning "TODO"
-constexpr size_t ntimes = 64;      // per chunk
-constexpr size_t nfrequencies = 1; // per GPU
-// constexpr size_t ntimes = 32768;    // per chunk
-// constexpr size_t nfrequencies = 32; // per GPU
+constexpr size_t ntimes = 32768;    // per chunk
+constexpr size_t nfrequencies = 32; // per GPU
 constexpr size_t ndishes = 512;
 constexpr size_t npolarizations = 2;
 constexpr size_t nbeams = 96;
