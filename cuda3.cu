@@ -361,6 +361,8 @@ __global__ void __launch_bounds__(1024, 1) form_beams(ucomplex4 *restrict const 
   } // for time0
 }
 
+////////////////////////////////////////////////////////////////////////////////
+
 #define CHECK_RESULT(err) check_result(__FILE__, __LINE__, err)
 void check_result(const char *file, int line, cudaError_t err) {
   if (err != cudaSuccess) {
@@ -371,7 +373,7 @@ void check_result(const char *file, int line, cudaError_t err) {
 }
 
 int main(int argc, char **argv) {
-  cout << "beamforming.cuda\n";
+  cout << "beamforming.cuda3\n";
 
   vector<ucomplex4> Earray;
   vector<ucomplex4> Aarray;
