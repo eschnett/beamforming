@@ -15,6 +15,7 @@ using namespace nvcuda::wmma;
 
 #undef DEBUG_A_ACCESS
 #undef DEBUG_E_ACCESS
+#undef DEBUG_J_ACCESS
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -230,6 +231,9 @@ __device__ int A_mask[num_frequencies * num_beams * num_dishes];
 #ifdef DEBUG_E_ACCESS
 __device__ int E_mask[num_times * num_frequencies * num_dishes * num_polarizations];
 #endif
+#ifdef DEBUG_J_ACCESS
+__device__ int J_mask[num_beams * num_frequencies * num_times * num_polarizations];
+#endif
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -320,9 +324,7 @@ using load_A::A_register_t;
 
 namespace shuffle_E {
 
-#warning "TODO"
-constexpr size_t num_time_iterations_outer = 512;
-  // constexpr size_t num_time_iterations_outer = 1;
+constexpr size_t num_time_iterations_outer = num_times / 64;
 constexpr size_t num_time_iterations_inner = 4;
 constexpr size_t num_time_warps = 16;
 constexpr size_t num_dish_warps = 2;
@@ -622,6 +624,15 @@ __device__ void transpose_J(ucomplex4 *restrict const J_array, const J_shared_t 
     const size_t beam = beam_iteration * num_beam_warps + beam_warp;
     // Load from shared memory
     const uint32_t Jall = *(const uint32_t *)&J_shared[beam][time0 % J_shared_time_modulo];
+
+#ifdef DEBUG_J_ACCESS
+    for (size_t i = 0; i < 4; ++i) {
+      const int oldval =
+          atomicMax(&J_mask[J2linear(beam, frequency, time0, 0, 0) / 2 + i], (blockIdx.x * 32 + threadIdx.y) * 32 + threadIdx.x);
+      assert(oldval == -1);
+    }
+#endif
+
     // Write to global memory
     // TOOD: Use __stcs
     *(uint32_t *)&J_array[J2linear(beam, frequency, time0, 0, 0) / 2] = Jall;
@@ -655,20 +666,18 @@ __global__ void __launch_bounds__(num_threads *num_warps, 1)
   }
   __syncthreads();
 #endif
+#ifdef DEBUG_J_ACCESS
+  if (threadIdx.x == 0 && threadIdx.y == 0) {
+    for (size_t i = 0; i < num_beams * num_frequencies * num_times * num_polarizations; ++i) {
+      J_mask[i] = -1;
+    }
+  }
+  __syncthreads();
+#endif
 
   // Load A into registers
   load_A::A_register_t A_register;
   load_A::load_A(A_register, A_array, frequency);
-
-#ifdef DEBUG_A_ACCESS
-  __syncthreads();
-  if (threadIdx.x == 0 && threadIdx.y == 0) {
-    for (size_t i = 0; i < num_frequencies * num_beams * num_dishes; ++i) {
-      assert(A_mask[i] >= 0);
-    }
-  }
-  return;
-#endif
 
   for (size_t time_iteration_outer = 0; time_iteration_outer < num_time_iterations_outer; ++time_iteration_outer) {
     // if (blockIdx.x == 0 && threadIdx.y == 0 && threadIdx.x == 0) {
@@ -694,12 +703,27 @@ __global__ void __launch_bounds__(num_threads *num_warps, 1)
     transpose_J::transpose_J(J_array, J_shared, frequency, time_iteration_outer);
   }
 
+#ifdef DEBUG_A_ACCESS
+  __syncthreads();
+  if (threadIdx.x == 0 && threadIdx.y == 0) {
+    for (size_t i = 0; i < num_frequencies * num_beams * num_dishes; ++i) {
+      assert(A_mask[i] >= 0);
+    }
+  }
+#endif
 #ifdef DEBUG_E_ACCESS
   __syncthreads();
   if (threadIdx.x == 0 && threadIdx.y == 0) {
-    printf("E_mask[0]=%d\n", E_mask[0]);
     for (size_t i = 0; i < num_times * num_frequencies * num_dishes * num_polarizations; ++i) {
       assert(E_mask[i] >= 0);
+    }
+  }
+#endif
+#ifdef DEBUG_J_ACCESS
+  __syncthreads();
+  if (threadIdx.x == 0 && threadIdx.y == 0) {
+    for (size_t i = 0; i < num_beams * num_frequencies * num_times * num_polarizations; ++i) {
+      assert(J_mask[i] >= 0);
     }
   }
 #endif
