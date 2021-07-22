@@ -14,6 +14,7 @@ using namespace nvcuda;
 using namespace nvcuda::wmma;
 
 #undef DEBUG_A_ACCESS
+#undef DEBUG_E_ACCESS
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -214,13 +215,21 @@ constexpr size_t num_k_elements = 32; // (mostly) dishes
 
 constexpr size_t num_times = ntimes;
 constexpr size_t num_frequencies = nfrequencies;
-// constexpr size_t num_frequencies = 1;
 constexpr size_t num_dishes = ndishes;
 constexpr size_t num_polarizations = npolarizations;
 constexpr size_t num_beams = nbeams;
 constexpr size_t num_complex = ncomplex;
 
 constexpr size_t num_dishes_prime = num_dishes;
+
+////////////////////////////////////////////////////////////////////////////////
+
+#ifdef DEBUG_A_ACCESS
+__device__ int A_mask[num_frequencies * num_beams * num_dishes];
+#endif
+#ifdef DEBUG_E_ACCESS
+__device__ int E_mask[num_times * num_frequencies * num_dishes * num_polarizations];
+#endif
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -260,41 +269,23 @@ __device__ void load_A(A_register_t &restrict A_register, const ucomplex4 *restr
       fragment<wmma::matrix_a, num_m_elements, num_n_elements, num_k_elements, experimental::precision::s4, row_major>
           A0[num_complex];
       for (size_t c = 0; c < num_complex; ++c) {
+
 #ifdef DEBUG_A_ACCESS
         if (threadIdx.x == 0) {
-          // for (size_t w = 0; w < 32; ++w) {
-          //   if (threadIdx.y == w) {
           const size_t A_offset =
               &A_array[Alinear(frequency, beam, dish_prime + c * num_dish_prime_k_elements / 2, 0) / 2] - A_array;
           const size_t A_stride = Alinear(0, 1, 0, 0) / 2;
           for (size_t n = 0; n < 8; ++n) {
             for (size_t k = 0; k < 32 / 2; ++k) {
-              if (!(Alinear(frequency, beam, dish_prime + c * num_dish_prime_k_elements / 2, 0) + n * 2 * A_stride + 2 * k ==
-                    Alinear(frequency, beam + n, dish_prime + c * num_dish_prime_k_elements / 2 + k, 0))) {
-                printf("[%d,%d][%d] n=%d k=%d Alin1=%d Alin2=%d\n", threadIdx.x, threadIdx.y, blockIdx.x, int(n), int(k),
-                       int(Alinear(frequency, beam, dish_prime + c * num_dish_prime_k_elements / 2, 0) + n * 2 * A_stride + 2 * k),
-                       int(Alinear(frequency, beam + n, dish_prime + c * num_dish_prime_k_elements / 2 + k, 0)));
-              }
-              assert(Alinear(frequency, beam, dish_prime + c * num_dish_prime_k_elements / 2, 0) + n * 2 * A_stride + 2 * k ==
-                     Alinear(frequency, beam + n, dish_prime + c * num_dish_prime_k_elements / 2 + k, 0));
-            }
-          }
-          for (size_t n = 0; n < 8; ++n) {
-            for (size_t k = 0; k < 32 / 2; ++k) {
-              if (!(A_mask[A_offset + n * A_stride + k] == -1)) {
-                printf("[%d,%d][%d] n=%d k=%d A_mask=%d\n", threadIdx.x, threadIdx.y, blockIdx.x, int(n), int(k),
-                       A_mask[A_offset + n * A_stride + k]);
-              }
               const int oldval =
-                  atomicMax(&A_mask[A_offset + n * A_stride + k], (blockIdx.x * 32 + threadIdx.y) * 32 + threadIdx.x + 1);
+                  atomicMax(&A_mask[A_offset + n * A_stride + k], (blockIdx.x * 32 + threadIdx.y) * 32 + threadIdx.x);
               assert(oldval == -1);
             }
           }
-          // }
           __syncthreads();
-          // }
         }
 #endif
+
         // TOOD: Use __ldcs
         // Load 2 consecutive sets of elements of A
         load_matrix_sync(A0[c], &A_array[Alinear(frequency, beam, dish_prime + c * num_dish_prime_k_elements / 2, 0) / 2],
@@ -329,7 +320,9 @@ using load_A::A_register_t;
 
 namespace shuffle_E {
 
+#warning "TODO"
 constexpr size_t num_time_iterations_outer = 512;
+  // constexpr size_t num_time_iterations_outer = 1;
 constexpr size_t num_time_iterations_inner = 4;
 constexpr size_t num_time_warps = 16;
 constexpr size_t num_dish_warps = 2;
@@ -373,8 +366,16 @@ __device__ void shuffle_E(E_shared_t &restrict E_shared, const ucomplex4 *restri
       const size_t dish = dish0 + (p * num_complex + c) * num_dish_threads * num_dish_explicit_inner;
       assert(dish < num_dishes);
       assert(uintptr_t(&E_array[Elinear(time, frequency, dish, 0, 0) / 2]) % sizeof(uint32_t) == 0);
+
+#ifdef DEBUG_E_ACCESS
+      for (size_t i = 0; i < 4; ++i) {
+        const int oldval =
+            atomicMax(&E_mask[Elinear(time, frequency, dish, 0, 0) / 2 + i], (blockIdx.x * 32 + threadIdx.y) * 32 + threadIdx.x);
+        assert(oldval == -1);
+      }
+#endif
+
       // TOOD: Use __ldcs
-      // TOOD: Use __stcs for J array
       E0[p][c] = *(const uint32_t *)&E_array[Elinear(time, frequency, dish, 0, 0) / 2];
     }
   }
@@ -503,7 +504,9 @@ __device__ void compute_Ju(Ju_shared_t &restrict Ju_shared, const A_register_t &
       for (size_t c = 0; c < num_complex; ++c) {
         assert(uintptr_t(&G_array[Glinear(frequency, beam)]) % sizeof(float) == 0);
         const float G = G_array[Glinear(frequency, beam)];
-        Ju8[p][c] = clamp(int32_t(lrintf(G * float(Ju[c]))), -127, 127);
+#warning "TODO"
+        // Ju8[p][c] = clamp(int32_t(lrintf(G * float(Ju[c]))), -127, 127);
+        Ju8[p][c] = clamp(int32_t(lrintf(G * float(Ju[c]))), -7, 7);
       }
     }
     // CUDA is little endian
@@ -620,16 +623,13 @@ __device__ void transpose_J(ucomplex4 *restrict const J_array, const J_shared_t 
     // Load from shared memory
     const uint32_t Jall = *(const uint32_t *)&J_shared[beam][time0 % J_shared_time_modulo];
     // Write to global memory
+    // TOOD: Use __stcs
     *(uint32_t *)&J_array[J2linear(beam, frequency, time0, 0, 0) / 2] = Jall;
   }
 }
 } // namespace transpose_J
 
 ////////////////////////////////////////////////////////////////////////////////
-
-#ifdef DEBUG_A_ACCESS
-__device__ int A_mask[num_frequencies * num_beams * num_dishes];
-#endif
 
 __global__ void __launch_bounds__(num_threads *num_warps, 1)
     form_beams(ucomplex4 *restrict const J_array, const ucomplex4 *restrict const E_array, const ucomplex4 *restrict const A_array,
@@ -639,20 +639,30 @@ __global__ void __launch_bounds__(num_threads *num_warps, 1)
 
   const size_t frequency = blockIdx.x;
 
-  // Load A into registers
 #ifdef DEBUG_A_ACCESS
-  if (blockIdx.x == 0 && threadIdx.x == 0 && threadIdx.y == 0) {
+  if (threadIdx.x == 0 && threadIdx.y == 0) {
     for (size_t i = 0; i < num_frequencies * num_beams * num_dishes; ++i) {
       A_mask[i] = -1;
     }
   }
   __syncthreads();
 #endif
+#ifdef DEBUG_E_ACCESS
+  if (threadIdx.x == 0 && threadIdx.y == 0) {
+    for (size_t i = 0; i < num_times * num_frequencies * num_dishes * num_polarizations; ++i) {
+      E_mask[i] = -1;
+    }
+  }
+  __syncthreads();
+#endif
+
+  // Load A into registers
   load_A::A_register_t A_register;
   load_A::load_A(A_register, A_array, frequency);
+
 #ifdef DEBUG_A_ACCESS
   __syncthreads();
-  if (blockIdx.x == 0 && threadIdx.x == 0 && threadIdx.y == 0) {
+  if (threadIdx.x == 0 && threadIdx.y == 0) {
     for (size_t i = 0; i < num_frequencies * num_beams * num_dishes; ++i) {
       assert(A_mask[i] >= 0);
     }
@@ -661,6 +671,10 @@ __global__ void __launch_bounds__(num_threads *num_warps, 1)
 #endif
 
   for (size_t time_iteration_outer = 0; time_iteration_outer < num_time_iterations_outer; ++time_iteration_outer) {
+    // if (blockIdx.x == 0 && threadIdx.y == 0 && threadIdx.x == 0) {
+    //   printf("time iteration %d/%d...\n", int(time_iteration_outer * (num_times / num_time_iterations_outer)), int(num_times));
+    // }
+
     __shared__ E_shared_t E_shared;
     __shared__ Ju_shared_t Ju_shared;
     __shared__ J_shared_t J_shared;
@@ -679,6 +693,16 @@ __global__ void __launch_bounds__(num_threads *num_warps, 1)
     __syncthreads();
     transpose_J::transpose_J(J_array, J_shared, frequency, time_iteration_outer);
   }
+
+#ifdef DEBUG_E_ACCESS
+  __syncthreads();
+  if (threadIdx.x == 0 && threadIdx.y == 0) {
+    printf("E_mask[0]=%d\n", E_mask[0]);
+    for (size_t i = 0; i < num_times * num_frequencies * num_dishes * num_polarizations; ++i) {
+      assert(E_mask[i] >= 0);
+    }
+  }
+#endif
 }
 
 ////////////////////////////////////////////////////////////////////////////////
