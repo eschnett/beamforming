@@ -401,7 +401,8 @@ static_assert(num_dish_prime_iterations * num_dish_prime_warps * num_dish_prime_
 constexpr size_t Ju_shared_dish_prime_divisor = num_dish_prime_iterations * num_dish_prime_k_elements;
 constexpr size_t Ju_shared_time_divisor = num_time_n_elements;
 constexpr size_t Ju_shared_time_modulo = num_time_iterations_inner2;
-using Ju_shared_t = uint32_t[num_dishes_prime / Ju_shared_dish_prime_divisor][num_beams][Ju_shared_time_modulo];
+using Ju_shared_t =
+    uint32_t[num_dishes_prime / Ju_shared_dish_prime_divisor][num_beams][Ju_shared_time_modulo]; // [polarization][complex]
 
 __device__ void compute_Ju(Ju_shared_t &restrict Ju_shared, const A_register_t &restrict A_register,
                            const E_shared_t &restrict E_shared, const float *restrict const G_array, const size_t frequency,
@@ -484,14 +485,126 @@ __device__ void compute_Ju(Ju_shared_t &restrict Ju_shared, const A_register_t &
 
 using compute_Ju::num_time_iterations_inner2;
 
+using compute_Ju::Ju_shared_dish_prime_divisor;
+using compute_Ju::Ju_shared_time_divisor;
+using compute_Ju::Ju_shared_time_modulo;
+
+using compute_Ju::Ju_shared_t;
+
+////////////////////////////////////////////////////////////////////////////////
+
+namespace reduce_to_J {
+
+constexpr size_t num_beam_warps = 12; // other warps are unused
+constexpr size_t num_beam_threads = 8;
+constexpr size_t num_time_threads = 4;
+constexpr size_t num_dish_prime_iterations = 8; // for reduction
+constexpr size_t num_polarizations_explicit = 2;
+constexpr size_t num_complex_explicit = 2;
+
+static_assert(num_beam_warps <= num_warps);
+static_assert(num_beam_threads * num_time_threads == num_threads);
+static_assert(num_time_iterations_outer * num_time_iterations_inner * num_time_iterations_inner2 * num_time_threads == num_times);
+static_assert(num_beam_warps * num_beam_threads == num_beams);
+static_assert(num_dish_prime_iterations == num_dishes_prime / Ju_shared_dish_prime_divisor);
+
+constexpr size_t J_shared_time_modulo = num_time_iterations_inner * num_time_iterations_inner2 * num_time_threads;
+constexpr size_t J_shared_padding = 4;
+
+using J_shared_t = uint16_t[num_beams][J_shared_time_modulo + J_shared_padding]; // [polarization][complex]
+
+__device__ void reduce_to_J(J_shared_t &restrict J_shared, const Ju_shared_t &restrict Ju_shared, const size_t time_iteration_outer,
+                            const size_t time_iteration_inner, const size_t time_iteration_inner2) {
+  const size_t beam_warp = threadIdx.y;
+  if (beam_warp < num_beam_warps) {
+    // Other warps are unused
+    const size_t beam_thread = threadIdx.x / num_time_threads;
+    const size_t time_thread = threadIdx.x % num_time_threads;
+    const size_t beam = beam_warp * num_beam_threads + beam_thread;
+    const size_t time = ((time_iteration_outer * num_time_iterations_inner + time_iteration_inner) * num_time_iterations_inner2 +
+                         time_iteration_inner2) *
+                            num_time_threads +
+                        time_thread;
+
+    // TODO: Vectorize this
+    int8_t J[num_polarizations][num_complex];
+    for (size_t p = 0; p < num_polarizations; ++p) {
+      for (size_t c = 0; c < num_complex; ++c) {
+        J[p][c] = 0;
+      }
+    }
+    for (size_t dish_prime_iteration = 0; dish_prime_iteration < num_dish_prime_iterations; ++dish_prime_iteration) {
+      for (size_t p = 0; p < num_polarizations; ++p) {
+        for (size_t c = 0; c < num_complex; ++c) {
+          uint32_t Ju = Ju_shared[dish_prime_iteration][beam][time / Ju_shared_time_divisor % Ju_shared_time_modulo];
+          J[p][c] += int8_t((Ju >> (8 * (p * num_complex + c))) & 0xffU);
+        }
+      }
+    }
+    // Convert to 4 bits and add bias
+    uint8_t J4[2];
+    for (size_t p = 0; p < num_polarizations; ++p) {
+      J4[p] = (uint32_t(clamp(J[p][0], -7, 7)) << 4) | uint32_t(clamp(J[p][1], -7, 7));
+    }
+    // Combine polarizations and add bias
+    // TODO: Use make_uchar2?
+    const uint16_t J4all = (uint32_t(J4[0]) | (uint32_t(J4[1]) << 8)) ^ 0x8888U;
+    J_shared[beam][time % J_shared_time_modulo] = J4all;
+  }
+}
+} // namespace reduce_to_J
+
+using reduce_to_J::J_shared_time_modulo;
+
+using reduce_to_J::J_shared_t;
+
+////////////////////////////////////////////////////////////////////////////////
+
+namespace transpose_J {
+
+constexpr size_t num_beam_iterations = 3;
+constexpr size_t num_beam_warps = 32;
+constexpr size_t num_time_threads = 16;
+constexpr size_t num_polarization_threads = 2;
+constexpr size_t num_time_explicit = 4;
+constexpr size_t num_complex_explicit = 2;
+
+static_assert(num_beam_warps == num_warps);
+static_assert(num_time_threads * num_polarization_threads == num_threads);
+static_assert(num_time_explicit * num_complex_explicit == num_reals_int);
+static_assert(num_time_iterations_outer * num_time_threads * num_time_explicit == num_times);
+static_assert(num_beam_iterations * num_beam_warps == num_beams);
+
+__device__ void transpose_J(ucomplex4 *restrict const J_array, const J_shared_t &restrict J_shared, const size_t frequency,
+                            const size_t time_iteration_outer) {
+  const size_t beam_warp = threadIdx.y;
+  const size_t time_thread = threadIdx.x / num_polarization_threads;
+  const size_t polarization_thread = threadIdx.x % num_polarization_threads;
+  const size_t time0 = (time_iteration_outer * num_time_threads + time_thread) * num_time_explicit;
+  const size_t polarization = polarization_thread;
+  for (size_t beam_iteration = 0; beam_iteration < num_beam_iterations; ++beam_iteration) {
+    const size_t beam = beam_iteration * num_beam_warps + beam_warp;
+    // Load data
+    // (We load twice as much as we need from shared memory)
+    // (We could avoid bank conflicts here by interchanging shared memory reads on every other thread)
+    uint32_t Jall0[2];
+    Jall0[0] = *(const uint32_t *)&J_shared[beam][(time0 + 0 * num_time_explicit / 2) % J_shared_time_modulo];
+    Jall0[1] = *(const uint32_t *)&J_shared[beam][(time0 + 1 * num_time_explicit / 2) % J_shared_time_modulo];
+    // Extract polarization
+    const uint32_t Jall1 = __byte_perm(Jall0[0], Jall0[1], polarization == 0 ? 0x6420 : 0x7531);
+    // Write to global memory
+    *(uint32_t *)&J_array[Jlinear(beam, frequency, polarization, time0, 0) / 2] = Jall1;
+  }
+}
+} // namespace transpose_J
+
 ////////////////////////////////////////////////////////////////////////////////
 
 __global__ void __launch_bounds__(num_threads *num_warps, 1)
     form_beams(ucomplex4 *restrict const J_array, const ucomplex4 *restrict const E_array, const ucomplex4 *restrict const A_array,
                const float *restrict const G_array) {
 
-  // Each frequency is transformed independently. We use one thread
-  // block per frequency.
+  // Each frequency is transformed independently. We use one thread block per frequency.
 
   const size_t frequency = blockIdx.x;
 
@@ -500,18 +613,23 @@ __global__ void __launch_bounds__(num_threads *num_warps, 1)
   load_A::load_A(A_register, A_array, frequency);
 
   for (size_t time_iteration_outer = 0; time_iteration_outer < num_time_iterations_outer; ++time_iteration_outer) {
+    __shared__ E_shared_t E_shared;
+    __shared__ Ju_shared_t Ju_shared;
+    __shared__ J_shared_t J_shared;
+
     for (size_t time_iteration_inner = 0; time_iteration_inner < num_time_iterations_inner; ++time_iteration_inner) {
-      __shared__ E_shared_t E_shared;
       shuffle_E::shuffle_E(E_shared, E_array, frequency, time_iteration_outer, time_iteration_inner);
       __syncthreads();
 
       for (size_t time_iteration_inner2 = 0; time_iteration_inner2 < num_time_iterations_inner2; ++time_iteration_inner2) {
-        __shared__ compute_Ju::Ju_shared_t Ju_shared;
         compute_Ju::compute_Ju(Ju_shared, A_register, E_shared, G_array, frequency, time_iteration_outer, time_iteration_inner,
                                time_iteration_inner2);
         __syncthreads();
+        reduce_to_J::reduce_to_J(J_shared, Ju_shared, time_iteration_outer, time_iteration_inner, time_iteration_inner2);
       }
     }
+    __syncthreads();
+    transpose_J::transpose_J(J_array, J_shared, frequency, time_iteration_outer);
   }
 }
 
@@ -553,9 +671,7 @@ int main(int argc, char **argv) {
 
   const auto t0 = gettime();
 
-#warning "TODO"
-  // const dim3 numBlocks(num_frequencies);
-  const dim3 numBlocks(1);
+  const dim3 numBlocks(num_frequencies);
   const dim3 threadsPerBlock(num_threads, num_warps);
   form_beams<<<numBlocks, threadsPerBlock>>>(Jarray2, Earray2, Aarray2, Garray2);
   err = cudaGetLastError();

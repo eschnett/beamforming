@@ -75,17 +75,6 @@ constexpr device_host size_t Jlinear(size_t b, size_t f, size_t p, size_t t, siz
   return ind;
 }
 
-// constexpr device_host size_t J2linear(size_t t, size_t f, size_t b, size_t p, size_t c) {
-//   assert(t < ntimes);
-//   assert(f < nfrequencies);
-//   assert(b < nbeams);
-//   assert(p < npolarizations);
-//   assert(c < ncomplex);
-//   const auto ind = c + ncomplex * (p + npolarizations * (b + nbeams * (f + nfrequencies * t)));
-//   assert(ind < Jsize);
-//   return ind;
-// }
-
 constexpr size_t Asize = nfrequencies * nbeams * ndishes * ncomplex;
 constexpr device_host size_t Alinear(size_t f, size_t b, size_t d, size_t c) {
   assert(f < nfrequencies);
