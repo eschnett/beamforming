@@ -25,6 +25,8 @@ struct ucomplex4 {
   // - each value x is stored as unsigned number as x + 8
   unsigned char data;
   ucomplex4() = default;
+  constexpr device_host bool operator==(const ucomplex4 &other) const { return data == other.data; }
+  constexpr device_host bool operator!=(const ucomplex4 &other) const { return !(*this == other); }
   // constexpr device_host ucomplex4() : data(0) {}
   constexpr device_host ucomplex4(signed char real, signed char imag) : data((((unsigned char)real << 4) | (imag & 0x0f)) ^ 0x88) {}
   constexpr device_host signed char real() const { return (signed char)(data ^ 0x88) >> 4; }
