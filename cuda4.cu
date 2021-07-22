@@ -179,7 +179,7 @@ using namespace nvcuda::wmma;
 // beam = (beam iteration) * (beam warp)
 //
 // input: J_shared[beam][time % J_shared_time_modulo + padding][polarization][complex]
-// output: J[beam][frequency][polarization][time][complex]
+// output: J[beam][frequency][time][polarization][complex]
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -188,11 +188,11 @@ using namespace nvcuda::wmma;
 __device__ int32_t clamp(int32_t i, int32_t i0, int32_t i1) { return max(i0, min(i1, i)); }
 
 __device__ int32_t extract_real(const int32_t x0, const int32_t x1) {
-  return ((uint32_t)(x0 & 0xf0f0f0f0U) >> 4) | (x1 & 0xf0f0f0f0U);
+  return (uint32_t(x0 & 0xf0f0f0f0U) >> 4) | (x1 & 0xf0f0f0f0U);
 }
 
 __device__ int32_t extract_imag(const int32_t x0, const int32_t x1) {
-  return (x0 & 0x0f0f0f0fU) | ((uint32_t)(x1 & 0x0f0f0f0fU) << 4);
+  return (x0 & 0x0f0f0f0fU) | (uint32_t(x1 & 0x0f0f0f0fU) << 4);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -470,10 +470,8 @@ __device__ void compute_Ju(Ju_shared_t &restrict Ju_shared, const A_register_t &
       }
     }
     // CUDA is little endian
-    // TODO: Use make_char4
-    // TODO: Use char4/uchar4 instead of uint32_t?
     const uint32_t Ju8all =
-        ((uint32_t)Ju8[0][0]) | ((uint32_t)Ju8[0][1] << 8) | ((uint32_t)Ju8[1][0] << 16) | ((uint32_t)Ju8[1][1] << 24);
+        uint32_t(Ju8[0][0]) | (uint32_t(Ju8[0][1]) << 8) | (uint32_t(Ju8[1][0]) << 16) | (uint32_t(Ju8[1][1]) << 24);
 
     const size_t element0 = threadIdx.x * JurePos.num_storage_elements;
     const size_t beam = beam0 + element0 % num_m_elements / num_polarizations;
@@ -534,9 +532,9 @@ __device__ void reduce_to_J(J_shared_t &restrict J_shared, const Ju_shared_t &re
       }
     }
     for (size_t dish_prime_iteration = 0; dish_prime_iteration < num_dish_prime_iterations; ++dish_prime_iteration) {
+      const uint32_t Ju = Ju_shared[dish_prime_iteration][beam][time / Ju_shared_time_divisor % Ju_shared_time_modulo];
       for (size_t p = 0; p < num_polarizations; ++p) {
         for (size_t c = 0; c < num_complex; ++c) {
-          uint32_t Ju = Ju_shared[dish_prime_iteration][beam][time / Ju_shared_time_divisor % Ju_shared_time_modulo];
           J[p][c] += int8_t((Ju >> (8 * (p * num_complex + c))) & 0xffU);
         }
       }
@@ -564,36 +562,28 @@ namespace transpose_J {
 
 constexpr size_t num_beam_iterations = 3;
 constexpr size_t num_beam_warps = 32;
-constexpr size_t num_time_threads = 16;
-constexpr size_t num_polarization_threads = 2;
-constexpr size_t num_time_explicit = 4;
+constexpr size_t num_time_threads = 32;
+constexpr size_t num_time_explicit = 2;
+constexpr size_t num_polarizations_explicit = 2;
 constexpr size_t num_complex_explicit = 2;
 
 static_assert(num_beam_warps == num_warps);
-static_assert(num_time_threads * num_polarization_threads == num_threads);
-static_assert(num_time_explicit * num_complex_explicit == num_reals_int);
+static_assert(num_time_threads == num_threads);
+static_assert(num_time_explicit * num_polarizations_explicit * num_complex_explicit == num_reals_int);
 static_assert(num_time_iterations_outer * num_time_threads * num_time_explicit == num_times);
 static_assert(num_beam_iterations * num_beam_warps == num_beams);
 
 __device__ void transpose_J(ucomplex4 *restrict const J_array, const J_shared_t &restrict J_shared, const size_t frequency,
                             const size_t time_iteration_outer) {
   const size_t beam_warp = threadIdx.y;
-  const size_t time_thread = threadIdx.x / num_polarization_threads;
-  const size_t polarization_thread = threadIdx.x % num_polarization_threads;
+  const size_t time_thread = threadIdx.x;
   const size_t time0 = (time_iteration_outer * num_time_threads + time_thread) * num_time_explicit;
-  const size_t polarization = polarization_thread;
   for (size_t beam_iteration = 0; beam_iteration < num_beam_iterations; ++beam_iteration) {
     const size_t beam = beam_iteration * num_beam_warps + beam_warp;
-    // Load data
-    // (We load twice as much as we need from shared memory)
-    // (We could avoid bank conflicts here by interchanging shared memory reads on every other thread)
-    uint32_t Jall0[2];
-    Jall0[0] = *(const uint32_t *)&J_shared[beam][(time0 + 0 * num_time_explicit / 2) % J_shared_time_modulo];
-    Jall0[1] = *(const uint32_t *)&J_shared[beam][(time0 + 1 * num_time_explicit / 2) % J_shared_time_modulo];
-    // Extract polarization
-    const uint32_t Jall1 = __byte_perm(Jall0[0], Jall0[1], polarization == 0 ? 0x6420 : 0x7531);
+    // Load from shared memory
+    const uint32_t Jall = *(const uint32_t *)&J_shared[beam][time0 % J_shared_time_modulo];
     // Write to global memory
-    *(uint32_t *)&J_array[Jlinear(beam, frequency, polarization, time0, 0) / 2] = Jall1;
+    *(uint32_t *)&J_array[J2linear(beam, frequency, time0, 0, 0) / 2] = Jall;
   }
 }
 } // namespace transpose_J
@@ -650,8 +640,8 @@ int main(int argc, char **argv) {
   vector<ucomplex4> Earray;
   vector<ucomplex4> Aarray;
   vector<float> Garray;
-  vector<ucomplex4> Jarray;
-  setup(Earray, Aarray, Garray, Jarray);
+  vector<ucomplex4> J2array;
+  setup(Earray, Aarray, Garray, J2array);
 
   cout << "Forming beams...\n";
   ucomplex4 *Earray2 = nullptr;
@@ -663,8 +653,8 @@ int main(int argc, char **argv) {
   float *Garray2 = nullptr;
   cudaMalloc(&Garray2, Garray.size() * sizeof(float));
   cudaMemcpy(Garray2, Garray.data(), Garray.size() * sizeof(float), cudaMemcpyHostToDevice);
-  ucomplex4 *Jarray2 = nullptr;
-  cudaMalloc(&Jarray2, Jarray.size() * sizeof(ucomplex4));
+  ucomplex4 *J2array2 = nullptr;
+  cudaMalloc(&J2array2, J2array.size() * sizeof(ucomplex4));
 
   cudaError_t err = cudaGetLastError();
   CHECK_RESULT(err);
@@ -673,7 +663,7 @@ int main(int argc, char **argv) {
 
   const dim3 numBlocks(num_frequencies);
   const dim3 threadsPerBlock(num_threads, num_warps);
-  form_beams<<<numBlocks, threadsPerBlock>>>(Jarray2, Earray2, Aarray2, Garray2);
+  form_beams<<<numBlocks, threadsPerBlock>>>(J2array2, Earray2, Aarray2, Garray2);
   err = cudaGetLastError();
   CHECK_RESULT(err);
   err = cudaDeviceSynchronize();
@@ -691,9 +681,20 @@ int main(int argc, char **argv) {
   Aarray2 = nullptr;
   cudaFree(Garray2);
   Garray2 = nullptr;
-  cudaMemcpy(Jarray.data(), Jarray2, Jarray.size() * sizeof(ucomplex4), cudaMemcpyDeviceToHost);
-  cudaFree(Jarray2);
-  Jarray2 = nullptr;
+  cudaMemcpy(J2array.data(), J2array2, J2array.size() * sizeof(ucomplex4), cudaMemcpyDeviceToHost);
+  cudaFree(J2array2);
+  J2array2 = nullptr;
+
+  vector<ucomplex4> Jarray(J2array.size());
+  for (size_t b = 0; b < nbeams; ++b) {
+    for (size_t f = 0; f < nfrequencies; ++f) {
+      for (size_t p = 0; p < npolarizations; ++p) {
+        for (size_t t = 0; t < ntimes; ++t) {
+          Jarray.at(Jlinear(b, f, p, t, 0) / 2) = J2array.at(J2linear(b, f, t, p, 0) / 2);
+        }
+      }
+    }
+  }
 
   check(Jarray);
 
