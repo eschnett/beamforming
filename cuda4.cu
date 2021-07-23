@@ -13,9 +13,16 @@ using namespace std;
 using namespace nvcuda;
 using namespace nvcuda::wmma;
 
-#undef DEBUG_A_ACCESS
-#undef DEBUG_E_ACCESS
-#undef DEBUG_J_ACCESS
+#undef DEBUG_A_ARRAY_READ
+#undef DEBUG_E_ARRAY_READ
+#undef DEBUG_J_ARRAY_WRITE
+
+#undef DEBUG_E_SHARED_WRITE
+#undef DEBUG_E_SHARED_READ
+
+////////////////////////////////////////////////////////////////////////////////
+
+// J[b,f,t,p] = G[f,b] sum[d] A[f,b,d] E[t,f,d,p]
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -47,6 +54,10 @@ using namespace nvcuda::wmma;
 // matrix m = 8    (beams)
 // matrix n = 8    (times)
 // matrix k = 32   (dishes)
+//
+// A[m][k]
+// B[k][n]
+// C[m][n]
 
 // Input and output arrays:
 //
@@ -145,7 +156,7 @@ using namespace nvcuda::wmma;
 //
 // input: A_register[complex][beam][dish]   [beam][dish]
 // input: E_shared[complex][time][polarization][dish' + padding][complex]
-// output: Ju_shared[dish' / Ju_shared_dish'_divisor][beam][time / Ju_shared_time_divisor %  Ju_shared_time_modulo]
+// output: Ju_shared[dish' / Ju_shared_dish'_divisor][beam][time / Ju_shared_time_divisor % Ju_shared_time_modulo]
 //                  [polarization][complex]
 // u_shared_dish'_divisor = (# dish' warp)
 // Ju_shared_time_divisor = (# time n matrix elements)
@@ -225,13 +236,13 @@ constexpr size_t num_dishes_prime = num_dishes;
 
 ////////////////////////////////////////////////////////////////////////////////
 
-#ifdef DEBUG_A_ACCESS
+#ifdef DEBUG_A_ARRAY_READ
 __device__ int A_mask[num_frequencies * num_beams * num_dishes];
 #endif
-#ifdef DEBUG_E_ACCESS
+#ifdef DEBUG_E_ARRAY_READ
 __device__ int E_mask[num_times * num_frequencies * num_dishes * num_polarizations];
 #endif
-#ifdef DEBUG_J_ACCESS
+#ifdef DEBUG_J_ARRAY_WRITE
 __device__ int J_mask[num_beams * num_frequencies * num_times * num_polarizations];
 #endif
 
@@ -270,19 +281,20 @@ __device__ void load_A(A_register_t &restrict A_register, const ucomplex4 *restr
       assert(beam < num_beams);
       assert(dish_prime < num_dishes);
 
+      // wmma::A[m][k]
       fragment<wmma::matrix_a, num_m_elements, num_n_elements, num_k_elements, experimental::precision::s4, row_major>
           A0[num_complex];
       for (size_t c = 0; c < num_complex; ++c) {
 
-#ifdef DEBUG_A_ACCESS
+#ifdef DEBUG_A_ARRAY_READ
         if (threadIdx.x == 0) {
           const size_t A_offset =
               &A_array[Alinear(frequency, beam, dish_prime + c * num_dish_prime_k_elements / 2, 0) / 2] - A_array;
           const size_t A_stride = Alinear(0, 1, 0, 0) / 2;
-          for (size_t n = 0; n < 8; ++n) {
+          for (size_t m = 0; m < 8; ++m) {
             for (size_t k = 0; k < 32 / 2; ++k) {
               const int oldval =
-                  atomicMax(&A_mask[A_offset + n * A_stride + k], (blockIdx.x * 32 + threadIdx.y) * 32 + threadIdx.x);
+                  atomicMax(&A_mask[A_offset + m * A_stride + k], (blockIdx.x * 32 + threadIdx.y) * 32 + threadIdx.x);
               assert(oldval == -1);
             }
           }
@@ -346,6 +358,15 @@ constexpr size_t E_shared_padding = 4;
 using E_shared_t = uint32_t[num_complex][E_shared_time_modulo][num_polarizations]
                            [num_dishes_prime / E_shared_dish_prime_divisor + E_shared_padding];
 
+#ifdef DEBUG_E_SHARED_WRITE
+__device__ int E_shared_write_mask[num_complex][E_shared_time_modulo][num_polarizations]
+                                  [num_dishes_prime / E_shared_dish_prime_divisor + E_shared_padding];
+#endif
+#ifdef DEBUG_E_SHARED_READ
+__device__ int E_shared_read_mask[num_complex][E_shared_time_modulo][num_polarizations]
+                                 [num_dishes_prime / E_shared_dish_prime_divisor + E_shared_padding];
+#endif
+
 __device__ void shuffle_E(E_shared_t &restrict E_shared, const ucomplex4 *restrict const E_array, const size_t frequency,
                           const size_t time_iteration_outer, const size_t time_iteration_inner) {
   const size_t time_warp = threadIdx.y / num_dish_warps;
@@ -369,7 +390,7 @@ __device__ void shuffle_E(E_shared_t &restrict E_shared, const ucomplex4 *restri
       assert(dish < num_dishes);
       assert(uintptr_t(&E_array[Elinear(time, frequency, dish, 0, 0) / 2]) % sizeof(uint32_t) == 0);
 
-#ifdef DEBUG_E_ACCESS
+#ifdef DEBUG_E_ARRAY_READ
       for (size_t i = 0; i < 4; ++i) {
         const int oldval =
             atomicMax(&E_mask[Elinear(time, frequency, dish, 0, 0) / 2 + i], (blockIdx.x * 32 + threadIdx.y) * 32 + threadIdx.x);
@@ -401,7 +422,15 @@ __device__ void shuffle_E(E_shared_t &restrict E_shared, const ucomplex4 *restri
     for (size_t p = 0; p < num_polarizations; ++p) {
       const size_t dish_prime = dish0_prime;
       assert(dish_prime < num_dishes_prime);
-      E_shared[c][time % shuffle_E::E_shared_time_modulo][p][dish_prime / shuffle_E::E_shared_dish_prime_divisor] = E2[p][c];
+
+#ifdef DEBUG_E_SHARED_WRITE
+      const int oldval =
+          atomicMax(&E_shared_write_mask[c][time % E_shared_time_modulo][p][dish_prime / E_shared_dish_prime_divisor],
+                    (blockIdx.x * 32 + threadIdx.y) * 32 + threadIdx.x);
+      assert(oldval == -1);
+#endif
+
+      E_shared[c][time % E_shared_time_modulo][p][dish_prime / E_shared_dish_prime_divisor] = E2[p][c];
     }
   }
 }
@@ -412,7 +441,6 @@ using shuffle_E::num_time_iterations_inner;
 using shuffle_E::num_time_iterations_outer;
 
 using shuffle_E::E_shared_dish_prime_divisor;
-using shuffle_E::E_shared_padding;
 using shuffle_E::E_shared_time_modulo;
 
 using shuffle_E::E_shared_t;
@@ -452,7 +480,7 @@ __device__ void compute_Ju(Ju_shared_t &restrict Ju_shared, const A_register_t &
   const size_t dish_prime_warp = threadIdx.y % num_dish_prime_warps;
 
   // Load E-field from shared memory
-  // wmma::B[k][n]   (must be row major)
+  // wmma::B[k][n]
   fragment<wmma::matrix_b, num_m_elements, num_n_elements, num_k_elements, experimental::precision::s4, col_major>
       E[num_complex][num_dish_prime_iterations];
 
@@ -462,10 +490,24 @@ __device__ void compute_Ju(Ju_shared_t &restrict Ju_shared, const A_register_t &
                             time_iteration_inner2) *
                            num_time_n_elements;
       const size_t dish_prime0 = (dish_prime_warp * num_dish_prime_iterations + dish_prime_iteration) * num_dish_prime_k_elements;
-      load_matrix_sync(
-          E[c][dish_prime_iteration],
-          &E_shared[c][time0 / Ju_shared_time_divisor % Ju_shared_time_modulo][0][dish_prime0 / E_shared_dish_prime_divisor],
-          (&E_shared[0][0][1][0] - &E_shared[0][0][0][0]) * num_reals_int);
+
+#ifdef DEBUG_E_SHARED_READ
+      if (threadIdx.x == 0) {
+        const size_t E_stride = (&E_shared[0][0][1][0] - &E_shared[0][0][0][0]) * num_reals_int / 8;
+        for (size_t n = 0; n < 8; ++n) {
+          for (size_t k = 0; k < 32 / 8; ++k) {
+            atomicAdd(
+                &shuffle_E::E_shared_read_mask[c][time0 % E_shared_time_modulo][0][dish_prime0 / E_shared_dish_prime_divisor] +
+                    n * E_stride + k,
+                num_beam_iterations * num_beam_m_elements);
+          }
+        }
+      }
+#endif
+
+      load_matrix_sync(E[c][dish_prime_iteration],
+                       &E_shared[c][time0 % E_shared_time_modulo][0][dish_prime0 / E_shared_dish_prime_divisor],
+                       (&E_shared[0][0][1][0] - &E_shared[0][0][0][0]) * num_reals_int);
     }
   }
 
@@ -506,9 +548,9 @@ __device__ void compute_Ju(Ju_shared_t &restrict Ju_shared, const A_register_t &
       for (size_t c = 0; c < num_complex; ++c) {
         assert(uintptr_t(&G_array[Glinear(frequency, beam)]) % sizeof(float) == 0);
         const float G = G_array[Glinear(frequency, beam)];
-#warning "TODO"
-        // Ju8[p][c] = clamp(int32_t(lrintf(G * float(Ju[c]))), -127, 127);
-        Ju8[p][c] = clamp(int32_t(lrintf(G * float(Ju[c]))), -7, 7);
+#warning "TODO: add overflow checks"
+#warning "TODO: sum/round is in different order"
+        Ju8[p][c] = clamp(int32_t(lrintf(G * float(Ju[c]))), -127, 127);
       }
     }
     // CUDA is little endian
@@ -625,7 +667,7 @@ __device__ void transpose_J(ucomplex4 *restrict const J_array, const J_shared_t 
     // Load from shared memory
     const uint32_t Jall = *(const uint32_t *)&J_shared[beam][time0 % J_shared_time_modulo];
 
-#ifdef DEBUG_J_ACCESS
+#ifdef DEBUG_J_ARRAY_WRITE
     for (size_t i = 0; i < 4; ++i) {
       const int oldval =
           atomicMax(&J_mask[J2linear(beam, frequency, time0, 0, 0) / 2 + i], (blockIdx.x * 32 + threadIdx.y) * 32 + threadIdx.x);
@@ -650,7 +692,7 @@ __global__ void __launch_bounds__(num_threads *num_warps, 1)
 
   const size_t frequency = blockIdx.x;
 
-#ifdef DEBUG_A_ACCESS
+#ifdef DEBUG_A_ARRAY_READ
   if (threadIdx.x == 0 && threadIdx.y == 0) {
     for (size_t i = 0; i < num_frequencies * num_beams * num_dishes; ++i) {
       A_mask[i] = -1;
@@ -658,7 +700,7 @@ __global__ void __launch_bounds__(num_threads *num_warps, 1)
   }
   __syncthreads();
 #endif
-#ifdef DEBUG_E_ACCESS
+#ifdef DEBUG_E_ARRAY_READ
   if (threadIdx.x == 0 && threadIdx.y == 0) {
     for (size_t i = 0; i < num_times * num_frequencies * num_dishes * num_polarizations; ++i) {
       E_mask[i] = -1;
@@ -666,7 +708,7 @@ __global__ void __launch_bounds__(num_threads *num_warps, 1)
   }
   __syncthreads();
 #endif
-#ifdef DEBUG_J_ACCESS
+#ifdef DEBUG_J_ARRAY_WRITE
   if (threadIdx.x == 0 && threadIdx.y == 0) {
     for (size_t i = 0; i < num_beams * num_frequencies * num_times * num_polarizations; ++i) {
       J_mask[i] = -1;
@@ -689,8 +731,54 @@ __global__ void __launch_bounds__(num_threads *num_warps, 1)
     __shared__ J_shared_t J_shared;
 
     for (size_t time_iteration_inner = 0; time_iteration_inner < num_time_iterations_inner; ++time_iteration_inner) {
+
+#ifdef DEBUG_E_SHARED_WRITE
+      if (threadIdx.x == 0 && threadIdx.y == 0) {
+        for (size_t c = 0; c < num_complex; ++c) {
+          for (size_t t = 0; t < E_shared_time_modulo; ++t) {
+            for (size_t p = 0; p < num_polarizations; ++p) {
+              for (size_t d = 0; d < num_dishes_prime / E_shared_dish_prime_divisor; ++d) {
+                shuffle_E::E_shared_write_mask[c][t][p][d] = -1;
+              }
+            }
+          }
+        }
+      }
+      __syncthreads();
+#endif
+
       shuffle_E::shuffle_E(E_shared, E_array, frequency, time_iteration_outer, time_iteration_inner);
       __syncthreads();
+
+#ifdef DEBUG_E_SHARED_WRITE
+      __syncthreads();
+      if (threadIdx.x == 0 && threadIdx.y == 0) {
+        for (size_t c = 0; c < num_complex; ++c) {
+          for (size_t t = 0; t < E_shared_time_modulo; ++t) {
+            for (size_t p = 0; p < num_polarizations; ++p) {
+              for (size_t d = 0; d < num_dishes_prime / E_shared_dish_prime_divisor; ++d) {
+                assert(shuffle_E::E_shared_write_mask[c][t][p][d] >= 0);
+              }
+            }
+          }
+        }
+      }
+#endif
+
+#ifdef DEBUG_E_SHARED_READ
+      if (threadIdx.x == 0 && threadIdx.y == 0) {
+        for (size_t c = 0; c < num_complex; ++c) {
+          for (size_t t = 0; t < E_shared_time_modulo; ++t) {
+            for (size_t p = 0; p < num_polarizations; ++p) {
+              for (size_t d = 0; d < num_dishes_prime / E_shared_dish_prime_divisor; ++d) {
+                shuffle_E::E_shared_read_mask[c][t][p][d] = 0;
+              }
+            }
+          }
+        }
+      }
+      __syncthreads();
+#endif
 
       for (size_t time_iteration_inner2 = 0; time_iteration_inner2 < num_time_iterations_inner2; ++time_iteration_inner2) {
         compute_Ju::compute_Ju(Ju_shared, A_register, E_shared, G_array, frequency, time_iteration_outer, time_iteration_inner,
@@ -698,12 +786,29 @@ __global__ void __launch_bounds__(num_threads *num_warps, 1)
         __syncthreads();
         reduce_to_J::reduce_to_J(J_shared, Ju_shared, time_iteration_outer, time_iteration_inner, time_iteration_inner2);
       }
+
+#ifdef DEBUG_E_SHARED_READ
+      __syncthreads();
+      if (threadIdx.x == 0 && threadIdx.y == 0) {
+        // E_shared needs to be read for every beam
+        for (size_t c = 0; c < num_complex; ++c) {
+          for (size_t t = 0; t < E_shared_time_modulo; ++t) {
+            for (size_t p = 0; p < num_polarizations; ++p) {
+              for (size_t d = 0; d < num_dishes_prime / E_shared_dish_prime_divisor; ++d) {
+                assert(shuffle_E::E_shared_read_mask[c][t][p][d] == num_beams);
+              }
+            }
+          }
+        }
+      }
+      return;
+#endif
     }
     __syncthreads();
     transpose_J::transpose_J(J_array, J_shared, frequency, time_iteration_outer);
   }
 
-#ifdef DEBUG_A_ACCESS
+#ifdef DEBUG_A_ARRAY_READ
   __syncthreads();
   if (threadIdx.x == 0 && threadIdx.y == 0) {
     for (size_t i = 0; i < num_frequencies * num_beams * num_dishes; ++i) {
@@ -711,7 +816,7 @@ __global__ void __launch_bounds__(num_threads *num_warps, 1)
     }
   }
 #endif
-#ifdef DEBUG_E_ACCESS
+#ifdef DEBUG_E_ARRAY_READ
   __syncthreads();
   if (threadIdx.x == 0 && threadIdx.y == 0) {
     for (size_t i = 0; i < num_times * num_frequencies * num_dishes * num_polarizations; ++i) {
@@ -719,7 +824,7 @@ __global__ void __launch_bounds__(num_threads *num_warps, 1)
     }
   }
 #endif
-#ifdef DEBUG_J_ACCESS
+#ifdef DEBUG_J_ARRAY_WRITE
   __syncthreads();
   if (threadIdx.x == 0 && threadIdx.y == 0) {
     for (size_t i = 0; i < num_beams * num_frequencies * num_times * num_polarizations; ++i) {
@@ -770,47 +875,68 @@ int main(int argc, char **argv) {
   // for (const bool m : A2mask)
   //   assert(m);
 
+  constexpr size_t num_iters = 100; // benchmark iterations
+
   cout << "Forming beams...\n";
-  ucomplex4 *Earray2 = nullptr;
-  cudaMalloc(&Earray2, Earray.size() * sizeof(ucomplex4));
-  cudaMemcpy(Earray2, Earray.data(), Earray.size() * sizeof(ucomplex4), cudaMemcpyHostToDevice);
-  ucomplex4 *A2array2 = nullptr;
-  cudaMalloc(&A2array2, A2array.size() * sizeof(ucomplex4));
-  cudaMemcpy(A2array2, A2array.data(), A2array.size() * sizeof(ucomplex4), cudaMemcpyHostToDevice);
-  float *Garray2 = nullptr;
-  cudaMalloc(&Garray2, Garray.size() * sizeof(float));
-  cudaMemcpy(Garray2, Garray.data(), Garray.size() * sizeof(float), cudaMemcpyHostToDevice);
-  ucomplex4 *J2array2 = nullptr;
-  cudaMalloc(&J2array2, J2array.size() * sizeof(ucomplex4));
+  ucomplex4 *Eptr = nullptr;
+  cudaMalloc(&Eptr, Earray.size() * sizeof(ucomplex4));
+  cudaMemcpy(Eptr, Earray.data(), Earray.size() * sizeof(ucomplex4), cudaMemcpyHostToDevice);
+  ucomplex4 *A2ptr = nullptr;
+  cudaMalloc(&A2ptr, A2array.size() * sizeof(ucomplex4));
+  cudaMemcpy(A2ptr, A2array.data(), A2array.size() * sizeof(ucomplex4), cudaMemcpyHostToDevice);
+  float *Gptr = nullptr;
+  cudaMalloc(&Gptr, Garray.size() * sizeof(float));
+  cudaMemcpy(Gptr, Garray.data(), Garray.size() * sizeof(float), cudaMemcpyHostToDevice);
+  ucomplex4 *J2ptr = nullptr;
+  cudaMalloc(&J2ptr, J2array.size() * sizeof(ucomplex4));
+  vector<ucomplex4 *> J2ptrs(num_iters, nullptr);
+  for (size_t iter = 0; iter < num_iters; ++iter) {
+    cudaMalloc(&J2ptrs.at(iter), J2array.size() * sizeof(ucomplex4));
+  }
 
   cudaError_t err = cudaGetLastError();
   CHECK_RESULT(err);
-
-  const auto t0 = gettime();
+  err = cudaDeviceSynchronize();
+  CHECK_RESULT(err);
 
   const dim3 numBlocks(num_frequencies);
   const dim3 threadsPerBlock(num_threads, num_warps);
-  form_beams<<<numBlocks, threadsPerBlock>>>(J2array2, Earray2, A2array2, Garray2);
+  form_beams<<<numBlocks, threadsPerBlock>>>(J2ptr, Eptr, A2ptr, Gptr);
+  err = cudaGetLastError();
+  CHECK_RESULT(err);
+  err = cudaDeviceSynchronize();
+  CHECK_RESULT(err);
+
+  cout << "Launching " << num_iters << " kernels...\n";
+  const auto t0 = gettime();
+
+  for (size_t iter = 0; iter < num_iters; ++iter) {
+    form_beams<<<numBlocks, threadsPerBlock>>>(J2ptrs.at(iter), Eptr, A2ptr, Gptr);
+  }
   err = cudaGetLastError();
   CHECK_RESULT(err);
   err = cudaDeviceSynchronize();
   CHECK_RESULT(err);
 
   const auto t1 = gettime();
-  cout << "Elapsed time: " << (t1 - t0) << " seconds\n";
+  cout << "Elapsed time: " << ((t1 - t0) / num_iters) << " seconds per iteration (with " << num_iters << " iterations)\n";
 
   err = cudaGetLastError();
   CHECK_RESULT(err);
 
-  cudaFree(Earray2);
-  Earray2 = nullptr;
-  cudaFree(A2array2);
-  A2array2 = nullptr;
-  cudaFree(Garray2);
-  Garray2 = nullptr;
-  cudaMemcpy(J2array.data(), J2array2, J2array.size() * sizeof(ucomplex4), cudaMemcpyDeviceToHost);
-  cudaFree(J2array2);
-  J2array2 = nullptr;
+  cudaFree(Eptr);
+  Eptr = nullptr;
+  cudaFree(A2ptr);
+  A2ptr = nullptr;
+  cudaFree(Gptr);
+  Gptr = nullptr;
+  cudaMemcpy(J2array.data(), J2ptr, J2array.size() * sizeof(ucomplex4), cudaMemcpyDeviceToHost);
+  cudaFree(J2ptr);
+  J2ptr = nullptr;
+  for (size_t iter = 0; iter < num_iters; ++iter) {
+    cudaFree(J2ptrs.at(iter));
+    J2ptrs.at(iter) = nullptr;
+  }
 
   // Change index order
   vector<ucomplex4> Jarray(J2array.size());
@@ -829,3 +955,10 @@ int main(int argc, char **argv) {
   cout << "Done.\n";
   return 0;
 }
+
+// TODO:
+// run on A40
+// run benchmarks on full GPU (daisy-chain, multiple kernels, need different ouputs)
+// test correctness; quantizing is different from standard implementation
+// test fragment layout on A40
+// KS has benchmark numbers
