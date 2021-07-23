@@ -51,12 +51,13 @@ void setup(vector<ucomplex4> &Earray, vector<ucomplex4> &Aarray, vector<float> &
   //     Garray.at(Glinear(f, b)) = 1;
 }
 
-constexpr uint32_t correct_checksum = ntimes == 32768 && nbeams == 128  ? 0x4de6498f
-                                      : ntimes == 32768 && nbeams == 96 ? 0xc4fb6a4c
-                                      : ntimes == 32                    ? 0xab69dfee
-                                      : ntimes == 8                     ? 0x3a3344bc
-                                      : ntimes == 1                     ? 0x019a0111
-                                                                        : 0;
+constexpr uint32_t correct_checksum = ntimes == 32768 && nfrequencies == 16 && nbeams == 96    ? 0x27303ea9
+                                      : ntimes == 32768 && nfrequencies == 32 && nbeams == 128 ? 0x4de6498f
+                                      : ntimes == 32768 && nfrequencies == 32 && nbeams == 96  ? 0xc4fb6a4c
+                                      : ntimes == 32 && nfrequencies == 32                     ? 0xab69dfee
+                                      : ntimes == 8 && nfrequencies == 32                      ? 0x3a3344bc
+                                      : ntimes == 1 && nfrequencies == 32                      ? 0x019a0111
+                                                                                               : 0;
 
 void check(const vector<ucomplex4> &Jarray) {
   // for (size_t b = 0; b < nbeams; ++b) {
