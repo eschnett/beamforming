@@ -271,17 +271,17 @@ int main(int argc, char **argv) {
   setup(Earray, Aarray, Garray, Jarray);
 
   cout << "Forming beams...\n";
-  ucomplex4 *Earray2 = nullptr;
-  cudaMalloc(&Earray2, Earray.size() * sizeof(ucomplex4));
-  cudaMemcpy(Earray2, Earray.data(), Earray.size() * sizeof(ucomplex4), cudaMemcpyHostToDevice);
-  ucomplex4 *Aarray2 = nullptr;
-  cudaMalloc(&Aarray2, Aarray.size() * sizeof(ucomplex4));
-  cudaMemcpy(Aarray2, Aarray.data(), Aarray.size() * sizeof(ucomplex4), cudaMemcpyHostToDevice);
-  float *Garray2 = nullptr;
-  cudaMalloc(&Garray2, Garray.size() * sizeof(float));
-  cudaMemcpy(Garray2, Garray.data(), Garray.size() * sizeof(float), cudaMemcpyHostToDevice);
-  ucomplex4 *Jarray2 = nullptr;
-  cudaMalloc(&Jarray2, Jarray.size() * sizeof(ucomplex4));
+  ucomplex4 *Eptr = nullptr;
+  cudaMalloc(&Eptr, Earray.size() * sizeof(ucomplex4));
+  cudaMemcpy(Eptr, Earray.data(), Earray.size() * sizeof(ucomplex4), cudaMemcpyHostToDevice);
+  ucomplex4 *Aptr = nullptr;
+  cudaMalloc(&Aptr, Aarray.size() * sizeof(ucomplex4));
+  cudaMemcpy(Aptr, Aarray.data(), Aarray.size() * sizeof(ucomplex4), cudaMemcpyHostToDevice);
+  float *Gptr = nullptr;
+  cudaMalloc(&Gptr, Garray.size() * sizeof(float));
+  cudaMemcpy(Gptr, Garray.data(), Garray.size() * sizeof(float), cudaMemcpyHostToDevice);
+  ucomplex4 *Jptr = nullptr;
+  cudaMalloc(&Jptr, Jarray.size() * sizeof(ucomplex4));
 
   cudaError_t err = cudaGetLastError();
   CHECK_RESULT(err);
@@ -293,7 +293,7 @@ int main(int argc, char **argv) {
   const dim3 numBlocks(nfrequencies);
   // const dim3 threadsPerBlock(m / 2, n, 16); // 16 seems optimal
   const dim3 threadsPerBlock(m / 2, n, 12);
-  form_beams<<<numBlocks, threadsPerBlock>>>(Jarray2, Earray2, Aarray2, Garray2);
+  form_beams<<<numBlocks, threadsPerBlock>>>(Jptr, Eptr, Aptr, Gptr);
   err = cudaGetLastError();
   CHECK_RESULT(err);
   err = cudaDeviceSynchronize();
@@ -305,15 +305,15 @@ int main(int argc, char **argv) {
   err = cudaGetLastError();
   CHECK_RESULT(err);
 
-  cudaFree(Earray2);
-  Earray2 = nullptr;
-  cudaFree(Aarray2);
-  Aarray2 = nullptr;
-  cudaFree(Garray2);
-  Garray2 = nullptr;
-  cudaMemcpy(Jarray.data(), Jarray2, Jarray.size() * sizeof(ucomplex4), cudaMemcpyDeviceToHost);
-  cudaFree(Jarray2);
-  Jarray2 = nullptr;
+  cudaFree(Eptr);
+  Eptr = nullptr;
+  cudaFree(Aptr);
+  Aptr = nullptr;
+  cudaFree(Gptr);
+  Gptr = nullptr;
+  cudaMemcpy(Jarray.data(), Jptr, Jarray.size() * sizeof(ucomplex4), cudaMemcpyDeviceToHost);
+  cudaFree(Jptr);
+  Jptr = nullptr;
 
   check(Jarray);
 
