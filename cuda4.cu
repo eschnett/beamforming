@@ -21,6 +21,8 @@ using namespace nvcuda::wmma;
 #undef DEBUG_E_SHARED_READ
 #undef DEBUG_JU_SHARED_WRITE
 #undef DEBUG_JU_SHARED_READ
+#define DEBUG_J_SHARED_WRITE
+#define DEBUG_J_SHARED_READ
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -611,6 +613,13 @@ constexpr size_t J_shared_padding = 4;
 
 using J_shared_t = uint16_t[num_beams][J_shared_time_modulo + J_shared_padding]; // [polarization][complex]
 
+#ifdef DEBUG_J_SHARED_WRITE
+__device__ int J_shared_write_mask[num_beams][J_shared_time_modulo + J_shared_padding]; // [polarization][complex]
+#endif
+#ifdef DEBUG_J_SHARED_READ
+__device__ int J_shared_read_mask[num_beams][J_shared_time_modulo + J_shared_padding]; // [polarization][complex]
+#endif
+
 __device__ void reduce_to_J(J_shared_t &restrict J_shared, const Ju_shared_t &restrict Ju_shared, const size_t time_iteration_outer,
                             const size_t time_iteration_inner, const size_t time_iteration_inner2) {
   const size_t beam_warp = threadIdx.y;
@@ -655,6 +664,13 @@ __device__ void reduce_to_J(J_shared_t &restrict J_shared, const Ju_shared_t &re
     // Combine polarizations and add bias
     // TODO: Use make_uchar2?
     const uint16_t J4all = (uint32_t(J4[0]) | (uint32_t(J4[1]) << 8)) ^ 0x8888U;
+
+#ifdef DEBUG_J_SHARED_WRITE
+    const int oldval =
+        atomicMax(&J_shared_write_mask[beam][time % J_shared_time_modulo], (blockIdx.x * 32 + threadIdx.y) * 32 + threadIdx.x);
+    assert(oldval == -1);
+#endif
+
     J_shared[beam][time % J_shared_time_modulo] = J4all;
   }
 }
@@ -689,6 +705,15 @@ __device__ void transpose_J(ucomplex4 *restrict const J_array, const J_shared_t 
   for (size_t beam_iteration = 0; beam_iteration < num_beam_iterations; ++beam_iteration) {
     const size_t beam = beam_iteration * num_beam_warps + beam_warp;
     // Load from shared memory
+
+#ifdef DEBUG_J_SHARED_READ
+    for (int i = 0; i < 2; ++i) {
+      const int oldval = atomicMax(&reduce_to_J::J_shared_read_mask[beam][time0 % J_shared_time_modulo] + i,
+                                   (blockIdx.x * 32 + threadIdx.y) * 32 + threadIdx.x);
+      assert(oldval == -1);
+    }
+#endif
+
     const uint32_t Jall = *(const uint32_t *)&J_shared[beam][time0 % J_shared_time_modulo];
 
 #ifdef DEBUG_J_ARRAY_WRITE
@@ -753,6 +778,17 @@ __global__ void __launch_bounds__(num_threads *num_warps, 1)
     __shared__ E_shared_t E_shared;
     __shared__ Ju_shared_t Ju_shared;
     __shared__ J_shared_t J_shared;
+
+#ifdef DEBUG_J_SHARED_WRITE
+    if (threadIdx.x == 0 && threadIdx.y == 0) {
+      for (size_t b = 0; b < num_beams; ++b) {
+        for (size_t t = 0; t < J_shared_time_modulo; ++t) {
+          reduce_to_J::J_shared_write_mask[b][t] = -1;
+        }
+      }
+    }
+    __syncthreads();
+#endif
 
     for (size_t time_iteration_inner = 0; time_iteration_inner < num_time_iterations_inner; ++time_iteration_inner) {
 
@@ -863,7 +899,8 @@ __global__ void __launch_bounds__(num_threads *num_warps, 1)
           }
         }
 #endif
-      }
+
+      } // for time_iteration_inner2
 
 #ifdef DEBUG_E_SHARED_READ
       __syncthreads();
@@ -879,12 +916,47 @@ __global__ void __launch_bounds__(num_threads *num_warps, 1)
           }
         }
       }
-      return;
 #endif
+
+    } // for time_iteration_inner
+
+#ifdef DEBUG_J_SHARED_WRITE
+    __syncthreads();
+    if (threadIdx.x == 0 && threadIdx.y == 0) {
+      for (size_t b = 0; b < num_beams; ++b) {
+        for (size_t t = 0; t < J_shared_time_modulo; ++t) {
+          assert(reduce_to_J::J_shared_write_mask[b][t] >= 0);
+        }
+      }
+    }
+#endif
+
+#ifdef DEBUG_J_SHARED_READ
+    if (threadIdx.x == 0 && threadIdx.y == 0) {
+      for (size_t b = 0; b < num_beams; ++b) {
+        for (size_t t = 0; t < J_shared_time_modulo; ++t) {
+          reduce_to_J::J_shared_read_mask[b][t] = -1;
+        }
+      }
     }
     __syncthreads();
+#endif
+
+    __syncthreads();
     transpose_J::transpose_J(J_array, J_shared, frequency, time_iteration_outer);
-  }
+
+#ifdef DEBUG_J_SHARED_READ
+    __syncthreads();
+    if (threadIdx.x == 0 && threadIdx.y == 0) {
+      for (size_t b = 0; b < num_beams; ++b) {
+        for (size_t t = 0; t < J_shared_time_modulo; ++t) {
+          assert(reduce_to_J::J_shared_read_mask[b][t] >= 0);
+        }
+      }
+    }
+#endif
+
+  } // for time_iteration_outer
 
 #ifdef DEBUG_A_ARRAY_READ
   __syncthreads();
