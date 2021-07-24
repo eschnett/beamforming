@@ -19,7 +19,8 @@ using namespace nvcuda::wmma;
 
 #undef DEBUG_E_SHARED_WRITE
 #undef DEBUG_E_SHARED_READ
-#define DEBUG_JU_SHARED_WRITE
+#undef DEBUG_JU_SHARED_WRITE
+#undef DEBUG_JU_SHARED_READ
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -474,6 +475,10 @@ using Ju_shared_t =
 __device__ int Ju_shared_write_mask[num_dishes_prime / Ju_shared_dish_prime_divisor][num_beams]
                                    [Ju_shared_time_modulo]; // [polarization][complex]
 #endif
+#ifdef DEBUG_JU_SHARED_READ
+__device__ int Ju_shared_read_mask[num_dishes_prime / Ju_shared_dish_prime_divisor][num_beams]
+                                  [Ju_shared_time_modulo]; // [polarization][complex]
+#endif
 
 __device__ void compute_Ju(Ju_shared_t &restrict Ju_shared, const A_register_t &restrict A_register,
                            const E_shared_t &restrict E_shared, const float *restrict const G_array, const size_t frequency,
@@ -627,6 +632,14 @@ __device__ void reduce_to_J(J_shared_t &restrict J_shared, const Ju_shared_t &re
       }
     }
     for (size_t dish_prime_iteration = 0; dish_prime_iteration < num_dish_prime_iterations; ++dish_prime_iteration) {
+      assert(dish_prime_iteration < num_dishes_prime / Ju_shared_dish_prime_divisor);
+
+#ifdef DEBUG_JU_SHARED_READ
+      const int oldval = atomicMax(&compute_Ju::Ju_shared_read_mask[dish_prime_iteration][beam][time % Ju_shared_time_modulo],
+                                   (blockIdx.x * 32 + threadIdx.y) * 32 + threadIdx.x);
+      assert(oldval == -1);
+#endif
+
       const uint32_t Ju = Ju_shared[dish_prime_iteration][beam][time % Ju_shared_time_modulo];
       for (size_t p = 0; p < num_polarizations; ++p) {
         for (size_t c = 0; c < num_complex; ++c) {
@@ -823,7 +836,33 @@ __global__ void __launch_bounds__(num_threads *num_warps, 1)
         }
 #endif
 
+#ifdef DEBUG_JU_SHARED_READ
+        if (threadIdx.x == 0 && threadIdx.y == 0) {
+          for (size_t d = 0; d < num_dishes_prime / Ju_shared_dish_prime_divisor; ++d) {
+            for (size_t b = 0; b < num_beams; ++b) {
+              for (size_t t = 0; t < Ju_shared_time_modulo; ++t) {
+                compute_Ju::Ju_shared_read_mask[d][b][t] = -1;
+              }
+            }
+          }
+        }
+        __syncthreads();
+#endif
+
         reduce_to_J::reduce_to_J(J_shared, Ju_shared, time_iteration_outer, time_iteration_inner, time_iteration_inner2);
+
+#ifdef DEBUG_JU_SHARED_READ
+        __syncthreads();
+        if (threadIdx.x == 0 && threadIdx.y == 0) {
+          for (size_t d = 0; d < num_dishes_prime / Ju_shared_dish_prime_divisor; ++d) {
+            for (size_t b = 0; b < num_beams; ++b) {
+              for (size_t t = 0; t < Ju_shared_time_modulo; ++t) {
+                assert(compute_Ju::Ju_shared_read_mask[d][b][t] >= 0);
+              }
+            }
+          }
+        }
+#endif
       }
 
 #ifdef DEBUG_E_SHARED_READ
