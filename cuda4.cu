@@ -564,20 +564,12 @@ __device__ void compute_Ju(Ju_shared_t &restrict Ju_shared, const A_register_t &
     const uint32_t Ju8all =
         uint32_t(Ju8[0][0]) | (uint32_t(Ju8[0][1]) << 8) | (uint32_t(Ju8[1][0]) << 16) | (uint32_t(Ju8[1][1]) << 24);
 
-#warning "beam is wrong"
     assert(dish_prime0 / Ju_shared_dish_prime_divisor == dish_prime_warp);
 
 #ifdef DEBUG_JU_SHARED_WRITE
-    assert(dish_prime_warp < num_dishes_prime / Ju_shared_dish_prime_divisor);
-    assert(beam < num_beams);
-    assert(time % Ju_shared_time_modulo < Ju_shared_time_modulo);
     const int oldval = atomicMax(&Ju_shared_write_mask[dish_prime_warp][beam][time % Ju_shared_time_modulo],
                                  (blockIdx.x * 32 + threadIdx.y) * 32 + threadIdx.x);
-    if (!(oldval == -1)) {
-      printf("ty=%02d tx=%02d d=%03d b=%02d t=%01d Ju=%d\n", threadIdx.y, threadIdx.x, int(dish_prime_warp), int(beam),
-             int(time % Ju_shared_time_modulo), oldval);
-    }
-    // assert(oldval == -1);
+    assert(oldval == -1);
 #endif
 
     Ju_shared[dish_prime_warp][beam][time % Ju_shared_time_modulo] = Ju8all;
