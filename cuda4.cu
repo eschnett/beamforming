@@ -19,6 +19,7 @@ using namespace nvcuda::wmma;
 
 #undef DEBUG_E_SHARED_WRITE
 #undef DEBUG_E_SHARED_READ
+#define DEBUG_JU_SHARED_WRITE
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -150,16 +151,14 @@ using namespace nvcuda::wmma;
 //
 // time = (time iteration outer) * (time iteration inner) * (time iteration inner2) * (time n matrix element)
 // beam = (beam iteration) * (beam warp) * (beam m matrix element)
-// dish' = (dish' warp) * (dish' iteration) * (dish' matrix element)
+// dish' = (dish' warp) * (dish' iteration) * (dish' k matrix element)
 // polarization = (polarization n matrix element)
 // complex = explicit
 //
 // input: A_register[complex][beam][dish]   [beam][dish]
 // input: E_shared[complex][time][polarization][dish' + padding][complex]
-// output: Ju_shared[dish' / Ju_shared_dish'_divisor][beam][time / Ju_shared_time_divisor % Ju_shared_time_modulo]
-//                  [polarization][complex]
-// u_shared_dish'_divisor = (# dish' warp)
-// Ju_shared_time_divisor = (# time n matrix elements)
+// output: Ju_shared[dish' / Ju_shared_dish'_divisor][beam][time % Ju_shared_time_modulo]   [polarization][complex]
+// u_shared_dish'_divisor = # dish' iterations) * (# dish' k matrex elements)
 // Ju_shared_time_modulo = (# time iteration inner2)
 
 // reduce_to_J:
@@ -467,10 +466,14 @@ static_assert(num_beam_iterations * num_beam_warps * num_beam_m_elements == num_
 static_assert(num_dish_prime_iterations * num_dish_prime_warps * num_dish_prime_k_elements == num_dishes);
 
 constexpr size_t Ju_shared_dish_prime_divisor = num_dish_prime_iterations * num_dish_prime_k_elements;
-constexpr size_t Ju_shared_time_divisor = num_time_n_elements;
 constexpr size_t Ju_shared_time_modulo = num_time_iterations_inner2;
 using Ju_shared_t =
     uint32_t[num_dishes_prime / Ju_shared_dish_prime_divisor][num_beams][Ju_shared_time_modulo]; // [polarization][complex]
+
+#ifdef DEBUG_JU_SHARED_WRITE
+__device__ int Ju_shared_write_mask[num_dishes_prime / Ju_shared_dish_prime_divisor][num_beams]
+                                   [Ju_shared_time_modulo]; // [polarization][complex]
+#endif
 
 __device__ void compute_Ju(Ju_shared_t &restrict Ju_shared, const A_register_t &restrict A_register,
                            const E_shared_t &restrict E_shared, const float *restrict const G_array, const size_t frequency,
@@ -520,6 +523,12 @@ __device__ void compute_Ju(Ju_shared_t &restrict Ju_shared, const A_register_t &
 
     fragment<wmma::accumulator, num_m_elements, num_n_elements, num_k_elements, int32_t> JurePos, JureNeg, JuimPos;
 
+    // These depend on the undocumented fragment layout
+    static_assert(JurePos.num_storage_elements == num_polarizations);
+    const size_t element0 = threadIdx.x * JurePos.num_storage_elements;
+    const size_t beam = beam0 + element0 / num_polarizations / num_time_n_elements % num_beam_m_elements;
+    const size_t time = time0 + element0 / num_polarizations % num_time_n_elements;
+
     // Initialize Ju
     fill_fragment(JurePos, 0);
     fill_fragment(JureNeg, 0);
@@ -533,21 +542,19 @@ __device__ void compute_Ju(Ju_shared_t &restrict Ju_shared, const A_register_t &
       mma_sync(JuimPos, A_register[1][beam_iteration][dish_prime_iteration], E[0][dish_prime_iteration], JuimPos);
     }
 
+    assert(uintptr_t(&G_array[Glinear(frequency, beam)]) % sizeof(float) == 0);
+    const float G = G_array[Glinear(frequency, beam)];
+
     // Extract result from Ju matrix
     int8_t Ju8[num_polarizations][num_complex];
     static_assert(JurePos.num_storage_elements == num_polarizations);
     for (size_t i = 0; i < JurePos.num_storage_elements; ++i) {
-      const size_t element = threadIdx.x * JurePos.num_storage_elements + i;
-      // const size_t time = time0 + element / num_m_elements;
-      const size_t beam = beam0 + element % num_m_elements / num_polarizations;
-      const size_t p = element % num_m_elements % num_polarizations;
-      // Combine positive and negative J values, and reduce from 32 to 16 bits
+      const size_t p = i;
+      // Combine positive and negative J values, and reduce from 32 to 8 bits
       int32_t Ju[num_complex];
       Ju[0] = JurePos.x[i] - JureNeg.x[i];
       Ju[1] = JuimPos.x[i];
       for (size_t c = 0; c < num_complex; ++c) {
-        assert(uintptr_t(&G_array[Glinear(frequency, beam)]) % sizeof(float) == 0);
-        const float G = G_array[Glinear(frequency, beam)];
 #warning "TODO: add overflow checks"
 #warning "TODO: sum/round is in different order"
         Ju8[p][c] = clamp(int32_t(lrintf(G * float(Ju[c]))), -127, 127);
@@ -557,10 +564,23 @@ __device__ void compute_Ju(Ju_shared_t &restrict Ju_shared, const A_register_t &
     const uint32_t Ju8all =
         uint32_t(Ju8[0][0]) | (uint32_t(Ju8[0][1]) << 8) | (uint32_t(Ju8[1][0]) << 16) | (uint32_t(Ju8[1][1]) << 24);
 
-    const size_t element0 = threadIdx.x * JurePos.num_storage_elements;
-    const size_t beam = beam0 + element0 % num_m_elements / num_polarizations;
+#warning "beam is wrong"
     assert(dish_prime0 / Ju_shared_dish_prime_divisor == dish_prime_warp);
-    Ju_shared[dish_prime_warp][beam][time0 / Ju_shared_time_divisor % Ju_shared_time_modulo] = Ju8all;
+
+#ifdef DEBUG_JU_SHARED_WRITE
+    assert(dish_prime_warp < num_dishes_prime / Ju_shared_dish_prime_divisor);
+    assert(beam < num_beams);
+    assert(time % Ju_shared_time_modulo < Ju_shared_time_modulo);
+    const int oldval = atomicMax(&Ju_shared_write_mask[dish_prime_warp][beam][time % Ju_shared_time_modulo],
+                                 (blockIdx.x * 32 + threadIdx.y) * 32 + threadIdx.x);
+    if (!(oldval == -1)) {
+      printf("ty=%02d tx=%02d d=%03d b=%02d t=%01d Ju=%d\n", threadIdx.y, threadIdx.x, int(dish_prime_warp), int(beam),
+             int(time % Ju_shared_time_modulo), oldval);
+    }
+    // assert(oldval == -1);
+#endif
+
+    Ju_shared[dish_prime_warp][beam][time % Ju_shared_time_modulo] = Ju8all;
   }
 }
 } // namespace compute_Ju
@@ -568,7 +588,6 @@ __device__ void compute_Ju(Ju_shared_t &restrict Ju_shared, const A_register_t &
 using compute_Ju::num_time_iterations_inner2;
 
 using compute_Ju::Ju_shared_dish_prime_divisor;
-using compute_Ju::Ju_shared_time_divisor;
 using compute_Ju::Ju_shared_time_modulo;
 
 using compute_Ju::Ju_shared_t;
@@ -616,7 +635,7 @@ __device__ void reduce_to_J(J_shared_t &restrict J_shared, const Ju_shared_t &re
       }
     }
     for (size_t dish_prime_iteration = 0; dish_prime_iteration < num_dish_prime_iterations; ++dish_prime_iteration) {
-      const uint32_t Ju = Ju_shared[dish_prime_iteration][beam][time / Ju_shared_time_divisor % Ju_shared_time_modulo];
+      const uint32_t Ju = Ju_shared[dish_prime_iteration][beam][time % Ju_shared_time_modulo];
       for (size_t p = 0; p < num_polarizations; ++p) {
         for (size_t c = 0; c < num_complex; ++c) {
           J[p][c] += int8_t((Ju >> (8 * (p * num_complex + c))) & 0xffU);
@@ -781,9 +800,37 @@ __global__ void __launch_bounds__(num_threads *num_warps, 1)
 #endif
 
       for (size_t time_iteration_inner2 = 0; time_iteration_inner2 < num_time_iterations_inner2; ++time_iteration_inner2) {
+
+#ifdef DEBUG_JU_SHARED_WRITE
+        if (threadIdx.x == 0 && threadIdx.y == 0) {
+          for (size_t d = 0; d < num_dishes_prime / Ju_shared_dish_prime_divisor; ++d) {
+            for (size_t b = 0; b < num_beams; ++b) {
+              for (size_t t = 0; t < Ju_shared_time_modulo; ++t) {
+                compute_Ju::Ju_shared_write_mask[d][b][t] = -1;
+              }
+            }
+          }
+        }
+        __syncthreads();
+#endif
+
         compute_Ju::compute_Ju(Ju_shared, A_register, E_shared, G_array, frequency, time_iteration_outer, time_iteration_inner,
                                time_iteration_inner2);
         __syncthreads();
+
+#ifdef DEBUG_JU_SHARED_WRITE
+        __syncthreads();
+        if (threadIdx.x == 0 && threadIdx.y == 0) {
+          for (size_t d = 0; d < num_dishes_prime / Ju_shared_dish_prime_divisor; ++d) {
+            for (size_t b = 0; b < num_beams; ++b) {
+              for (size_t t = 0; t < Ju_shared_time_modulo; ++t) {
+                assert(compute_Ju::Ju_shared_write_mask[d][b][t] >= 0);
+              }
+            }
+          }
+        }
+#endif
+
         reduce_to_J::reduce_to_J(J_shared, Ju_shared, time_iteration_outer, time_iteration_inner, time_iteration_inner2);
       }
 
@@ -875,7 +922,8 @@ int main(int argc, char **argv) {
   // for (const bool m : A2mask)
   //   assert(m);
 
-  constexpr size_t num_iters = 100; // benchmark iterations
+  constexpr size_t num_iters = 0; // benchmark iterations
+  // constexpr size_t num_iters = 100; // benchmark iterations
 
   cout << "Forming beams...\n";
   ucomplex4 *Eptr = nullptr;
