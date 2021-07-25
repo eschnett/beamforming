@@ -6,7 +6,11 @@
 
 #include <mma.h>
 
+#include <algorithm>
+#include <cmath>
+#include <complex>
 #include <iostream>
+#include <random>
 
 using namespace std;
 
@@ -21,8 +25,8 @@ using namespace nvcuda::wmma;
 #undef DEBUG_E_SHARED_READ
 #undef DEBUG_JU_SHARED_WRITE
 #undef DEBUG_JU_SHARED_READ
-#define DEBUG_J_SHARED_WRITE
-#define DEBUG_J_SHARED_READ
+#undef DEBUG_J_SHARED_WRITE
+#undef DEBUG_J_SHARED_READ
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -568,8 +572,8 @@ __device__ void compute_Ju(Ju_shared_t &restrict Ju_shared, const A_register_t &
       }
     }
     // CUDA is little endian
-    const uint32_t Ju8all =
-        uint32_t(Ju8[0][0]) | (uint32_t(Ju8[0][1]) << 8) | (uint32_t(Ju8[1][0]) << 16) | (uint32_t(Ju8[1][1]) << 24);
+    const uint32_t Ju8all = uint32_t(uint8_t(Ju8[0][0])) | (uint32_t(uint8_t(Ju8[0][1])) << 8) |
+                            (uint32_t(uint8_t(Ju8[1][0])) << 16) | (uint32_t(uint8_t(Ju8[1][1])) << 24);
 
     assert(dish_prime0 / Ju_shared_dish_prime_divisor == dish_prime_warp);
 
@@ -650,9 +654,14 @@ __device__ void reduce_to_J(J_shared_t &restrict J_shared, const Ju_shared_t &re
 #endif
 
       const uint32_t Ju = Ju_shared[dish_prime_iteration][beam][time % Ju_shared_time_modulo];
+      int8_t Ju8[num_polarizations][num_complex];
+      Ju8[0][0] = int8_t(Ju & 0xffU);
+      Ju8[0][1] = int8_t((Ju >> 8) & 0xffU);
+      Ju8[1][0] = int8_t((Ju >> 16) & 0xffU);
+      Ju8[1][1] = int8_t((Ju >> 24) & 0xffU);
       for (size_t p = 0; p < num_polarizations; ++p) {
         for (size_t c = 0; c < num_complex; ++c) {
-          J[p][c] += int8_t((Ju >> (8 * (p * num_complex + c))) & 0xffU);
+          J[p][c] += Ju8[p][c];
         }
       }
     }
@@ -995,14 +1004,115 @@ void check_result(const char *file, int line, cudaError_t err) {
   }
 }
 
+////////////////////////////////////////////////////////////////////////////////
+
+void setup_one(vector<ucomplex4> &Earray, vector<ucomplex4> &Aarray, vector<float> &Garray, vector<ucomplex4> &J2array,
+               vector<ucomplex4> &J2array_expected) {
+  // Test: Choose one beam, frequency, time, polarization, and dish. Set everything else to zero.
+
+  // mt19937 engine(42);
+  mt19937 engine(time(0));
+
+  // const size_t beam = uniform_int_distribution<size_t>(0, num_beams - 1)(engine);
+  // const size_t frequency = uniform_int_distribution<size_t>(0, num_frequencies - 1)(engine);
+  // const size_t time = uniform_int_distribution<size_t>(0, num_times - 1)(engine);
+  // const size_t polarization = uniform_int_distribution<size_t>(0, num_polarizations - 1)(engine);
+  // const size_t dish = uniform_int_distribution<size_t>(0, num_dishes - 1)(engine);
+  const size_t beam = 0;
+  const size_t frequency = 0;
+  const size_t time = 0;
+  const size_t polarization = 0;
+  const size_t dish = 0;
+
+  const auto has_overflow = [](auto G, auto A, auto E) {
+    return real(A * E) > 7 || imag(A * E) > 7 || real(G * A * E) > 7 || imag(G * A * E) > 7;
+  };
+
+  complex<int> Aval, Eval;
+  int Gval;
+  do {
+    // Aval = complex<int>(uniform_int_distribution<int>(-2, 2)(engine), uniform_int_distribution<int>(-2, 2)(engine));
+    // Eval = complex<int>(uniform_int_distribution<int>(-2, 2)(engine), uniform_int_distribution<int>(-2, 2)(engine));
+    // Gval = uniform_int_distribution<int>(-2, 2)(engine);
+    Aval = complex<int>(1, 0);
+    Eval = complex<int>(1, 0);
+    // Gval = 1;
+    Gval = -1;
+  } while (has_overflow(Gval, Aval, Eval));
+  const complex<int> Jval = Gval * Aval * Eval;
+
+  const ucomplex4 Aval4(Aval);
+  const ucomplex4 Eval4(Eval);
+  const float Gvalf(Gval);
+  const ucomplex4 Jval4(Jval);
+
+  cout << "beam=" << beam << " frequency=" << frequency << " time=" << time << " polarization=" << polarization << " dish=" << dish
+       << "\n";
+  cout << "Aval=" << Aval << " Eval=" << Eval << " Gval=" << Gval << " Jval=" << Jval << "\n";
+
+  Earray.resize(Esize / 2);
+  Aarray.resize(Asize / 2);
+  Garray.resize(Gsize);
+  J2array.resize(Jsize / 2);
+  J2array_expected.resize(Jsize / 2);
+
+  for (size_t t = 0; t < num_times; ++t) {
+    for (size_t f = 0; f < num_frequencies; ++f) {
+      for (size_t d = 0; d < num_dishes; ++d) {
+        for (size_t p = 0; p < num_polarizations; ++p) {
+          Earray.at(Elinear(t, f, d, p, 0) / 2) =
+              t == time && f == frequency && d == dish && p == polarization ? Eval4 : ucomplex4(0, 0);
+          // Earray.at(Elinear(t, f, d, p, 0) / 2) = ucomplex4(1,0);
+        }
+      }
+    }
+  }
+
+  for (size_t f = 0; f < num_frequencies; ++f) {
+    for (size_t b = 0; b < num_beams; ++b) {
+      for (size_t d = 0; d < num_dishes; ++d) {
+        Aarray.at(Alinear(f, b, d, 0) / 2) = f == frequency && b == beam && d == dish ? Aval4 : ucomplex4(0, 0);
+        // Aarray.at(Alinear(f, b, d, 0) / 2) = ucomplex4(1, 0);
+      }
+    }
+  }
+
+  for (size_t f = 0; f < num_frequencies; ++f) {
+    for (size_t b = 0; b < num_beams; ++b) {
+      Garray.at(Glinear(f, b)) = f == frequency && b == beam ? Gvalf : 0;
+      // Garray.at(Glinear(f, b)) = 1;
+    }
+  }
+
+  for (size_t b = 0; b < num_beams; ++b) {
+    for (size_t f = 0; f < num_frequencies; ++f) {
+      for (size_t t = 0; t < num_times; ++t) {
+        for (size_t p = 0; p < num_polarizations; ++p) {
+          J2array_expected.at(J2linear(b, f, t, p, 0) / 2) =
+              b == beam && f == frequency && t == time && p == polarization ? Jval4 : ucomplex4(0, 0);
+        }
+      }
+    }
+  }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
 int main(int argc, char **argv) {
   cout << "beamforming.cuda4\n";
+
+  // vector<ucomplex4> Earray;
+  // vector<ucomplex4> Aarray;
+  // vector<float> Garray;
+  // vector<ucomplex4> J2array;
+  // setup(Earray, Aarray, Garray, J2array);
 
   vector<ucomplex4> Earray;
   vector<ucomplex4> Aarray;
   vector<float> Garray;
   vector<ucomplex4> J2array;
-  setup(Earray, Aarray, Garray, J2array);
+  vector<ucomplex4> J2array_expected;
+  setup_one(Earray, Aarray, Garray, J2array, J2array_expected);
 
   // Change index order
   vector<ucomplex4> A2array(Aarray.size());
@@ -1089,19 +1199,40 @@ int main(int argc, char **argv) {
     J2ptrs.at(iter) = nullptr;
   }
 
-  // Change index order
-  vector<ucomplex4> Jarray(J2array.size());
-  for (size_t b = 0; b < nbeams; ++b) {
-    for (size_t f = 0; f < nfrequencies; ++f) {
-      for (size_t p = 0; p < npolarizations; ++p) {
-        for (size_t t = 0; t < ntimes; ++t) {
-          Jarray.at(Jlinear(b, f, p, t, 0) / 2) = J2array.at(J2linear(b, f, t, p, 0) / 2);
+  // // Change index order
+  // vector<ucomplex4> Jarray(J2array.size());
+  // for (size_t b = 0; b < nbeams; ++b) {
+  //   for (size_t f = 0; f < nfrequencies; ++f) {
+  //     for (size_t p = 0; p < npolarizations; ++p) {
+  //       for (size_t t = 0; t < ntimes; ++t) {
+  //         Jarray.at(Jlinear(b, f, p, t, 0) / 2) = J2array.at(J2linear(b, f, t, p, 0) / 2);
+  //       }
+  //     }
+  //   }
+  // }
+  //
+  // check(Jarray);
+
+  bool allcorrect = true;
+  for (size_t b = 0; b < num_beams; ++b) {
+    for (size_t f = 0; f < num_frequencies; ++f) {
+      for (size_t t = 0; t < num_times; ++t) {
+        for (size_t p = 0; p < num_polarizations; ++p) {
+          if (!(J2array.at(J2linear(b, f, t, p, 0) / 2) == J2array_expected.at(J2linear(b, f, t, p, 0) / 2))) {
+            allcorrect = false;
+            cout << "J2[b=" << b << ",f=" << f << ",t=" << t << ",p=" << p
+                 << "]=" << complex<int>(J2array.at(J2linear(b, f, t, p, 0) / 2))
+                 << "; J2_expected=" << complex<int>(J2array_expected.at(J2linear(b, f, t, p, 0) / 2)) << "\n";
+          }
+          // assert(J2array.at(J2linear(b, f, t, p, 0) / 2) == J2array_expected.at(J2linear(b, f, t, p, 0) / 2));
         }
       }
     }
   }
-
-  check(Jarray);
+  if (!allcorrect) {
+    cout << "ERROR FOUND\n";
+    exit(1);
+  }
 
   cout << "Done.\n";
   return 0;

@@ -10,6 +10,7 @@
 #include <sys/time.h>
 
 #include <cassert>
+#include <complex>
 #include <cstdint>
 
 using namespace std;
@@ -29,12 +30,31 @@ struct ucomplex4 {
   constexpr device_host bool operator!=(const ucomplex4 &other) const { return !(*this == other); }
   // constexpr device_host ucomplex4() : data(0) {}
   constexpr device_host ucomplex4(signed char real, signed char imag) : data((((unsigned char)real << 4) | (imag & 0x0f)) ^ 0x88) {}
+  constexpr device_host ucomplex4(complex<int> x) : ucomplex4(x.real(), x.imag()) {}
+  operator complex<int>() const { return complex<int>(real(), imag()); }
   constexpr device_host signed char real() const { return (signed char)(data ^ 0x88) >> 4; }
   constexpr device_host signed char imag() const { return (signed char)((unsigned char)(data ^ 0x88) << 4) >> 4; }
-  constexpr device_host ucomplex4 conj() const { return ucomplex4(real(), -imag()); }
   constexpr device_host ucomplex4 swap() const { return ucomplex4(imag(), real()); }
   constexpr device_host signed char operator[](int c) const { return c == 0 ? imag() : real(); }
   constexpr device_host icomplex4 debias() const;
+  constexpr device_host ucomplex4 operator+() const { return ucomplex4(+real(), +imag()); }
+  constexpr device_host ucomplex4 operator-() const { return ucomplex4(-real(), -imag()); }
+  constexpr device_host ucomplex4 conj() const { return ucomplex4(+real(), -imag()); }
+  friend constexpr device_host ucomplex4 operator+(const ucomplex4 &x, const ucomplex4 &y) {
+    return ucomplex4(x.real() + y.real(), x.imag() + y.imag());
+  }
+  friend constexpr device_host ucomplex4 operator-(const ucomplex4 &x, const ucomplex4 &y) {
+    return ucomplex4(x.real() - y.real(), x.imag() - y.imag());
+  }
+  friend constexpr device_host ucomplex4 operator*(const int &a, const ucomplex4 &x) {
+    return ucomplex4(a * x.real(), a * x.imag());
+  }
+  friend constexpr device_host ucomplex4 operator*(const ucomplex4 &x, const int &a) {
+    return ucomplex4(x.real() * a, x.imag() * a);
+  }
+  friend constexpr device_host ucomplex4 operator*(const ucomplex4 &x, const ucomplex4 &y) {
+    return ucomplex4(x.real() * y.real() - x.imag() * y.imag(), x.real() * y.imag() + x.imag() * y.real());
+  }
 };
 
 static_assert(ucomplex4(1, 2).data == 0x9a);

@@ -10,7 +10,8 @@
 using namespace std;
 
 // For debugging
-constexpr size_t ntimes = 32768;   // per chunk
+// constexpr size_t ntimes = 32768;   // per chunk
+constexpr size_t ntimes = 128;   // per chunk
 constexpr size_t nfrequencies = 1; // per GPU
 constexpr size_t ndishes = 512;
 constexpr size_t npolarizations = 2;
