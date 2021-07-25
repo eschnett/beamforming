@@ -11,7 +11,7 @@ using namespace std;
 
 // For debugging
 // constexpr size_t ntimes = 32768;   // per chunk
-constexpr size_t ntimes = 128;   // per chunk
+constexpr size_t ntimes = 128;     // per chunk
 constexpr size_t nfrequencies = 1; // per GPU
 constexpr size_t ndishes = 512;
 constexpr size_t npolarizations = 2;
@@ -110,6 +110,16 @@ constexpr device_host size_t Alinear(size_t f, size_t b, size_t d, size_t c) {
   assert(d < ndishes);
   assert(c < ncomplex);
   const auto ind = c + ncomplex * (d + ndishes * (b + nbeams * f));
+  assert(ind < Asize);
+  return ind;
+}
+
+constexpr device_host size_t A2linear(size_t f, size_t b, size_t c, size_t d) {
+  assert(f < nfrequencies);
+  assert(b < nbeams);
+  assert(c < ncomplex);
+  assert(d < ndishes);
+  const auto ind = d + ndishes * (c + ncomplex * (b + nbeams * f));
   assert(ind < Asize);
   return ind;
 }

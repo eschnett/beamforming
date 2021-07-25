@@ -12,6 +12,7 @@
 #include <cassert>
 #include <complex>
 #include <cstdint>
+#include <iostream>
 
 using namespace std;
 
@@ -31,10 +32,10 @@ struct ucomplex4 {
   // constexpr device_host ucomplex4() : data(0) {}
   constexpr device_host ucomplex4(signed char real, signed char imag) : data((((unsigned char)real << 4) | (imag & 0x0f)) ^ 0x88) {}
   constexpr device_host ucomplex4(complex<int> x) : ucomplex4(x.real(), x.imag()) {}
-  operator complex<int>() const { return complex<int>(real(), imag()); }
+  constexpr device_host operator complex<int>() const { return complex<int>(real(), imag()); }
   constexpr device_host signed char real() const { return (signed char)(data ^ 0x88) >> 4; }
   constexpr device_host signed char imag() const { return (signed char)((unsigned char)(data ^ 0x88) << 4) >> 4; }
-  constexpr device_host ucomplex4 swap() const { return ucomplex4(imag(), real()); }
+  // constexpr device_host ucomplex4 swap() const { return ucomplex4(imag(), real()); }
   constexpr device_host signed char operator[](int c) const { return c == 0 ? imag() : real(); }
   constexpr device_host icomplex4 debias() const;
   constexpr device_host ucomplex4 operator+() const { return ucomplex4(+real(), +imag()); }
@@ -55,6 +56,7 @@ struct ucomplex4 {
   friend constexpr device_host ucomplex4 operator*(const ucomplex4 &x, const ucomplex4 &y) {
     return ucomplex4(x.real() * y.real() - x.imag() * y.imag(), x.real() * y.imag() + x.imag() * y.real());
   }
+  friend ostream &operator<<(ostream &os, const ucomplex4 &x) { return os << complex<int>(x); }
 };
 
 static_assert(ucomplex4(1, 2).data == 0x9a);

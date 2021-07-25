@@ -310,8 +310,9 @@ __device__ void load_A(A_register_t &restrict A_register, const ucomplex4 *restr
 
         // TOOD: Use __ldcs
         // Load 2 consecutive sets of elements of A
-        load_matrix_sync(A0[c], &A_array[Alinear(frequency, beam, dish_prime + c * num_dish_prime_k_elements / 2, 0) / 2],
-                         Alinear(0, 1, 0, 0));
+        // load_matrix_sync(A0[c], &A_array[Alinear(frequency, beam, dish_prime + c * num_dish_prime_k_elements / 2, 0) / 2],
+        //                  Alinear(0, 1, 0, 0));
+        load_matrix_sync(A0[c], &A_array[A2linear(frequency, beam, c, dish_prime) / 2], Alinear(0, 1, 0, 0));
       }
 
       assert(beam / A_register_beam_divisor == beam_iteration);
@@ -319,8 +320,36 @@ __device__ void load_A(A_register_t &restrict A_register, const ucomplex4 *restr
       static_assert(A_register[0][beam_iteration][dish_prime_iteration].num_storage_elements == 1);
       for (int i = 0; i < A_register[0][beam_iteration][dish_prime_iteration].num_storage_elements; ++i) {
         // Extract complex components and remove bias
-        A_register[0][beam_iteration][dish_prime_iteration].x[i] = extract_real(A0[0].x[i], A0[1].x[i]) ^ 0x88888888U;
-        A_register[1][beam_iteration][dish_prime_iteration].x[i] = extract_imag(A0[0].x[i], A0[1].x[i]) ^ 0x88888888U;
+
+        // A_register[0][beam_iteration][dish_prime_iteration].x[i] = extract_real(A0[0].x[i], A0[1].x[i]) ^ 0x88888888U;
+        // A_register[1][beam_iteration][dish_prime_iteration].x[i] = extract_imag(A0[0].x[i], A0[1].x[i]) ^ 0x88888888U;
+
+        // const uint32_t a00 = A0[0].x[i] ^ 0x88888888U;
+        // const uint32_t a01 = A0[1].x[i] ^ 0x88888888U;
+        // const uint32_t a10 =                  //
+        //     (((a00 >> 0x04) & 0xfU) << 0x00) | //
+        //     (((a00 >> 0x0c) & 0xfU) << 0x04) | //
+        //     (((a00 >> 0x14) & 0xfU) << 0x08) | //
+        //     (((a00 >> 0x1c) & 0xfU) << 0x0c) | //
+        //     (((a01 >> 0x04) & 0xfU) << 0x10) | //
+        //     (((a01 >> 0x0c) & 0xfU) << 0x14) | //
+        //     (((a01 >> 0x14) & 0xfU) << 0x18) | //
+        //     (((a01 >> 0x1c) & 0xfU) << 0x1c);
+        // const uint32_t a11 =                  //
+        //     (((a00 >> 0x00) & 0xfU) << 0x00) | //
+        //     (((a00 >> 0x08) & 0xfU) << 0x04) | //
+        //     (((a00 >> 0x10) & 0xfU) << 0x08) | //
+        //     (((a00 >> 0x18) & 0xfU) << 0x0c) | //
+        //     (((a01 >> 0x00) & 0xfU) << 0x10) | //
+        //     (((a01 >> 0x08) & 0xfU) << 0x14) | //
+        //     (((a01 >> 0x10) & 0xfU) << 0x18) | //
+        //     (((a01 >> 0x18) & 0xfU) << 0x1c);
+        // A_register[0][beam_iteration][dish_prime_iteration].x[i] = a10;
+        // A_register[1][beam_iteration][dish_prime_iteration].x[i] = a11;
+
+        for (size_t c = 0; c < num_complex; ++c) {
+          A_register[c][beam_iteration][dish_prime_iteration].x[i] = A0[c].x[i] ^ 0x88888888U;
+        }
       }
     }
   }
@@ -404,10 +433,54 @@ __device__ void shuffle_E(E_shared_t &restrict E_shared, const ucomplex4 *restri
       }
 #endif
 
+      // #warning "TODO"
+      //       {
+      //         if (threadIdx.y == 0) {
+      //           for (int t = 0; t < 32; ++t) {
+      //             __syncthreads();
+      //             if (threadIdx.x == t) {
+      //               printf("t=%d p=%d c=%d d=%d idx=%d\n", int(t), int(p), int(c), int(dish), int(Elinear(time, frequency, dish,
+      //               0, 0)));
+      //             }
+      //           }
+      //         }
+      //       }
+
       // TOOD: Use __ldcs
       E0[p][c] = *(const uint32_t *)&E_array[Elinear(time, frequency, dish, 0, 0) / 2];
+
+      // #warning "TODO"
+      //       E0[p][c] = 0;
+      //       for (size_t e = 0; e < 8; ++e) {
+      //         // this works.
+      //         // const int q = e % 4; // 2*p+c
+      //         // does this?
+      //         const int q = (dish + e / 4) / 16;
+      //         E0[p][c] |= ((q % 16) ^ 0x8) << (4 * e);
+      //       }
+
+      // #warning "TODO"
+      //       {
+      //         if (threadIdx.y == 0) {
+      //           for (int t = 0; t < 32; ++t) {
+      //             __syncthreads();
+      //             if (threadIdx.x == t) {
+      //               for (int e = 0; e < 8; ++e) {
+      //                 printf("p=%d c=%d t=%d e=%d E0=%d\n", int(p), int(c), t, e, ((E0[p][c] ^ 0x88888888) >> (4 * e)) & 0b1111);
+      //               }
+      //             }
+      //           }
+      //         }
+      //       }
     }
   }
+
+  // Layout: p=0..1 (1 bit), p=0..1 (1 bit), e=0..7 ("element" inside each int, 3 bits), t=0..31 (thread)
+  // Notation: p0 := bit 0 of p; e2 := bit 2 of e, etc.
+  //
+  // E0[p][c][e] = E[d=p0c0t4t3t2t1t0e2, p=e1, c=e0]
+  // E1[p][c][e] = E[d=p0e0t4t3t2t1t0e2, p=e1, c=c0]
+  // E2[p][c][e] = E[d=e1e0t4t3t2t1t0e2, p=p0, c=c0]
 
   // First we split out the complex components and remove the bias
   uint32_t E1[num_polarizations][num_complex];
@@ -419,8 +492,8 @@ __device__ void shuffle_E(E_shared_t &restrict E_shared, const ucomplex4 *restri
   // Next we separate the polarizations
   uint32_t E2[num_polarizations][num_complex];
   for (size_t c = 0; c < num_complex; ++c) {
-    E2[0][c] = __byte_perm(E1[0][c], E1[1][c], 0x6420);
-    E2[1][c] = __byte_perm(E1[0][c], E1[1][c], 0x7531);
+    E2[0][c] = __byte_perm(E1[0][c], E1[1][c], 0x6240);
+    E2[1][c] = __byte_perm(E1[0][c], E1[1][c], 0x7351);
   }
 
   // Store into shared memory
@@ -428,6 +501,30 @@ __device__ void shuffle_E(E_shared_t &restrict E_shared, const ucomplex4 *restri
     for (size_t p = 0; p < num_polarizations; ++p) {
       const size_t dish_prime = dish0_prime;
       assert(dish_prime < num_dishes_prime);
+
+      // #warning "TODO"
+      //       {
+      //         if (threadIdx.y == 0) {
+      //           for (int t = 0; t < 32; ++t) {
+      //             __syncthreads();
+      //             if (threadIdx.x == t) {
+      //               for (int e = 0; e < 8; ++e) {
+      //                 printf("p=%d c=%d t=%d e=%d E2=%d\n", int(p), int(c), t, e, (E2[p][c] >> (4 * e)) & 0b1111);
+      //               }
+      //             }
+      //           }
+      //         }
+      //       }
+
+      // #warning "TODO"
+      // if (threadIdx.y == 0) {
+      //   for (size_t e = 0; e < 8; ++e) {
+      //     const int q_prime = threadIdx.x * 8 + e;
+      //     const int q = (q_prime & 0b110000000) | ((q & 0b1100000) >> 5) | ((q % 0b11111) << 2);
+      //     assert(E2[p][c] == q_prime % 7);
+      //   }
+      //   assert(0);
+      // }
 
 #ifdef DEBUG_E_SHARED_WRITE
       const int oldval =
@@ -439,6 +536,11 @@ __device__ void shuffle_E(E_shared_t &restrict E_shared, const ucomplex4 *restri
       E_shared[c][time % E_shared_time_modulo][p][dish_prime / E_shared_dish_prime_divisor] = E2[p][c];
     }
   }
+
+  // #warning "TODO"
+  //   if (threadIdx.y == 0) {
+  //     assert(0);
+  //   }
 }
 
 } // namespace shuffle_E
@@ -547,6 +649,8 @@ __device__ void compute_Ju(Ju_shared_t &restrict Ju_shared, const A_register_t &
 
     // Multiply
     for (size_t dish_prime_iteration = 0; dish_prime_iteration < num_dish_prime_iterations; ++dish_prime_iteration) {
+      static_assert(num_beam_iterations == num_beams / A_register_beam_divisor);
+      static_assert(num_dish_prime_iterations == num_dishes / A_register_dish_prime_divisor);
       mma_sync(JurePos, A_register[0][beam_iteration][dish_prime_iteration], E[0][dish_prime_iteration], JurePos);
       mma_sync(JureNeg, A_register[1][beam_iteration][dish_prime_iteration], E[1][dish_prime_iteration], JureNeg);
       mma_sync(JuimPos, A_register[0][beam_iteration][dish_prime_iteration], E[1][dish_prime_iteration], JuimPos);
@@ -1022,7 +1126,23 @@ void setup_one(vector<ucomplex4> &Earray, vector<ucomplex4> &Aarray, vector<floa
   const size_t frequency = 0;
   const size_t time = 0;
   const size_t polarization = 0;
-  const size_t dish = 0;
+  // const size_t dish = 0;
+  // const size_t beam = 46;
+  // const size_t frequency = 0;
+  // const size_t time = 96;
+  // const size_t polarization = 0;
+  // const size_t dish = 250;
+  // const size_t dish = 0b011111010; // error
+  // const size_t dish = 0b011111000; // error
+  // const size_t dish = 0b011110000; // error
+  // const size_t dish = 0b011100000; // error
+  // const size_t dish = 0b011000000; // error
+  // const size_t dish = 0b001000000; // error
+  // const size_t dish = 0b010000000; // success
+  // const size_t dish = 0b000000000; // success
+  // const size_t dish = 0;  // success
+  const size_t dish = 1; // error
+  // const size_t dish = 64; // error
 
   const auto has_overflow = [](auto G, auto A, auto E) {
     return real(A * E) > 7 || imag(A * E) > 7 || real(G * A * E) > 7 || imag(G * A * E) > 7;
@@ -1036,8 +1156,8 @@ void setup_one(vector<ucomplex4> &Earray, vector<ucomplex4> &Aarray, vector<floa
     // Gval = uniform_int_distribution<int>(-2, 2)(engine);
     Aval = complex<int>(1, 0);
     Eval = complex<int>(1, 0);
-    // Gval = 1;
-    Gval = -1;
+    Gval = 1;
+    // Gval = -2;
   } while (has_overflow(Gval, Aval, Eval));
   const complex<int> Jval = Gval * Aval * Eval;
 
@@ -1071,7 +1191,8 @@ void setup_one(vector<ucomplex4> &Earray, vector<ucomplex4> &Aarray, vector<floa
   for (size_t f = 0; f < num_frequencies; ++f) {
     for (size_t b = 0; b < num_beams; ++b) {
       for (size_t d = 0; d < num_dishes; ++d) {
-        Aarray.at(Alinear(f, b, d, 0) / 2) = f == frequency && b == beam && d == dish ? Aval4 : ucomplex4(0, 0);
+        Aarray.at(Alinear(f, b, d, 0) / 2) =
+            f == frequency && b == beam && d == dish /* && (d >= 0 && d < 512) */ /* && d == 0 */ ? Aval4 : ucomplex4(0, 0);
         // Aarray.at(Alinear(f, b, d, 0) / 2) = ucomplex4(1, 0);
       }
     }
@@ -1079,8 +1200,8 @@ void setup_one(vector<ucomplex4> &Earray, vector<ucomplex4> &Aarray, vector<floa
 
   for (size_t f = 0; f < num_frequencies; ++f) {
     for (size_t b = 0; b < num_beams; ++b) {
-      Garray.at(Glinear(f, b)) = f == frequency && b == beam ? Gvalf : 0;
-      // Garray.at(Glinear(f, b)) = 1;
+      // Garray.at(Glinear(f, b)) = f == frequency && b == beam ? Gvalf : 0;
+      Garray.at(Glinear(f, b)) = 1;
     }
   }
 
@@ -1116,24 +1237,74 @@ int main(int argc, char **argv) {
 
   // Change index order
   vector<ucomplex4> A2array(Aarray.size());
-  // vector<bool> A2mask(Aarray.size());
-  for (size_t f = 0; f < nfrequencies; ++f) {
-    for (size_t b = 0; b < num_beams; ++b) {
-      for (size_t d = 0; d < ndishes; ++d) {
-        for (size_t p = 0; p < npolarizations; ++p) {
-          const size_t d8 = (d >> 8) & 0b1;
-          const size_t d67 = (d >> 6) & 0b11;
-          const size_t d012345 = (d >> 0) & 0b111111;
-          const size_t d_prime = (d8 << 8) | (d012345 << 2) | (d67 << 0);
-          // assert(!A2mask.at(Alinear(f, b, d_prime, 0) / 2));
-          // A2mask.at(Alinear(f, b, d_prime, 0) / 2) = true;
-          A2array.at(Alinear(f, b, d_prime, 0) / 2) = Aarray.at(Alinear(f, b, d, 0) / 2);
+  {
+    bool Amask[num_frequencies][num_beams][num_dishes][num_complex];
+    for (size_t f = 0; f < num_frequencies; ++f) {
+      for (size_t b = 0; b < num_beams; ++b) {
+        for (size_t d = 0; d < num_dishes; ++d) {
+          for (size_t c = 0; c < num_complex; ++c) {
+            Amask[f][b][d][c] = false;
+          }
+        }
+      }
+    }
+    bool A2mask[num_frequencies][num_beams][num_complex][num_dishes];
+    for (size_t f = 0; f < num_frequencies; ++f) {
+      for (size_t b = 0; b < num_beams; ++b) {
+        for (size_t c = 0; c < num_complex; ++c) {
+          for (size_t d = 0; d < num_dishes; ++d) {
+            A2mask[f][b][c][d] = false;
+          }
+        }
+      }
+    }
+    for (size_t f = 0; f < num_frequencies; ++f) {
+      for (size_t b = 0; b < num_beams; ++b) {
+        for (size_t c = 0; c < num_complex; ++c) {
+          for (size_t d = 0; d < num_dishes; ++d) {
+            const size_t d8 = (d >> 8) & 0b1;
+            const size_t d67 = (d >> 6) & 0b11;
+            const size_t d012345 = (d >> 0) & 0b111111;
+            assert(((d8 << 8) | (d67 << 6) | (d012345 << 0)) == d);
+            const size_t d_prime = (d8 << 8) | (d012345 << 2) | (d67 << 0);
+
+            assert(!Amask[f][b][d][c]);
+            Amask[f][b][d][c] = true;
+            assert(!A2mask[f][b][c][d]);
+            A2mask[f][b][c][d] = true;
+
+            const signed char arrval = Aarray.at(Alinear(f, b, d, c) / 2)[!c];
+            const ucomplex4 oldval = A2array.at(A2linear(f, b, c, d_prime) / 2);
+            ucomplex4 newval;
+            if (d_prime % 2 == 0) {
+              newval = ucomplex4(oldval.real(), arrval);
+            } else {
+              newval = ucomplex4(arrval, oldval.imag());
+            }
+            A2array.at(A2linear(f, b, c, d_prime) / 2) = newval;
+          }
+        }
+      }
+    }
+    for (size_t f = 0; f < num_frequencies; ++f) {
+      for (size_t b = 0; b < num_beams; ++b) {
+        for (size_t d = 0; d < num_dishes; ++d) {
+          for (size_t c = 0; c < num_complex; ++c) {
+            assert(Amask[f][b][d][c]);
+          }
+        }
+      }
+    }
+    for (size_t f = 0; f < num_frequencies; ++f) {
+      for (size_t b = 0; b < num_beams; ++b) {
+        for (size_t c = 0; c < num_complex; ++c) {
+          for (size_t d = 0; d < num_dishes; ++d) {
+            assert(A2mask[f][b][c][d]);
+          }
         }
       }
     }
   }
-  // for (const bool m : A2mask)
-  //   assert(m);
 
   constexpr size_t num_iters = 0; // benchmark iterations
   // constexpr size_t num_iters = 100; // benchmark iterations
