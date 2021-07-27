@@ -1339,8 +1339,8 @@ int main(int argc, char **argv) {
     // }
   }
 
-  constexpr size_t num_iters = 0; // benchmark iterations
-  // constexpr size_t num_iters = 100; // benchmark iterations
+  // constexpr size_t num_iters = 0; // benchmark iterations
+  constexpr size_t num_iters = 100; // benchmark iterations
 
   cout << "Forming beams...\n";
   ucomplex4 *Eptr = nullptr;
