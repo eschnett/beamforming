@@ -88,14 +88,17 @@ using namespace nvcuda::wmma;
 // 2 explicit for complex numbers
 //
 // beam = (beam iteration) * (beam warp) * (beam m matrix element)
-// dish = (dish iteration) * (dish warp) * (dish k matrix element)
+// WRONG dish = (dish iteration) * (dish warp) * (dish k matrix element)
+// dish = (dish warp) * (dish iteration) * (dish k matrix element)
 // complex = (explicit)
 //
 // input: A[frequency][beam][dish][complex]
-// output: A_register[complex][beam / A_register_beam_divisor][dish / A_register_dish_divisor]
+// output: A_register[complex][beam / A_register_beam_divisor][dish / A_register_dish_divisor % A_register_dish_modulo]
 //         [beam % A_register_beam_matrix_modulo][dish % A_register_dish_matrix_modulo]
 // A_register_beam_divisor = (# beam warp) * (# beam m matrix element)
-// A_register_dish_divisor = (# dish warp) * (# dish k matrix element)
+// WRONT A_register_dish_divisor = (# dish warp) * (# dish k matrix element)
+// A_register_dish_divisor = (# dish k matrix element)
+// A_register_dish_modulo = (# dish iterations)
 // A_register_beam_matrix_modulo = (# beam m matrix element)
 // A_register_dish_matrix_modulo = (# dish k matrix element)
 //
@@ -265,17 +268,18 @@ constexpr size_t num_beam_m_elements = 8;
 constexpr size_t num_complex_explicit = 2;
 
 static_assert(num_beam_warps * num_dish_prime_warps == num_warps);
-static_assert(num_beam_iterations * num_beam_warps * num_beam_m_elements == num_beams);
+static_assert(num_beam_warps * num_beam_iterations * num_beam_m_elements == num_beams);
 static_assert(num_dish_prime_iterations * num_dish_prime_warps * num_dish_prime_k_elements == num_dishes);
 
 constexpr size_t A_register_beam_divisor = num_beam_warps * num_beam_m_elements;
-constexpr size_t A_register_dish_prime_divisor = num_dish_prime_warps * num_dish_prime_k_elements;
+// constexpr size_t A_register_dish_prime_divisor = num_dish_prime_warps * num_dish_prime_k_elements;
+constexpr size_t A_register_dish_prime_divisor = num_dish_prime_k_elements;
+constexpr size_t A_register_dish_prime_modulo = num_dish_prime_iterations;
 constexpr size_t A_register_beam_matrix_modulo = num_beam_m_elements;
 constexpr size_t A_register_dish_prime_matrix_modulo = num_dish_prime_k_elements;
 
-using A_register_t =
-    fragment<wmma::matrix_a, num_m_elements, num_n_elements, num_k_elements, experimental::precision::s4,
-             row_major>[num_complex][num_beams / A_register_beam_divisor][num_dishes / A_register_dish_prime_divisor];
+using A_register_t = fragment<wmma::matrix_a, num_m_elements, num_n_elements, num_k_elements, experimental::precision::s4,
+                              row_major>[num_complex][num_beams / A_register_beam_divisor][A_register_dish_prime_modulo];
 
 __device__ void load_A(A_register_t &restrict A_register, const ucomplex4 *restrict const A_array, const size_t frequency) {
   const size_t beam_warp = threadIdx.y / num_dish_prime_warps;
@@ -283,7 +287,8 @@ __device__ void load_A(A_register_t &restrict A_register, const ucomplex4 *restr
   for (size_t beam_iteration = 0; beam_iteration < num_beam_iterations; ++beam_iteration) {
     for (size_t dish_prime_iteration = 0; dish_prime_iteration < num_dish_prime_iterations; ++dish_prime_iteration) {
       const size_t beam = (beam_iteration * num_beam_warps + beam_warp) * num_beam_m_elements;
-      const size_t dish_prime = (dish_prime_iteration * num_dish_prime_warps + dish_prime_warp) * num_dish_prime_k_elements;
+      // const size_t dish_prime = (dish_prime_iteration * num_dish_prime_warps + dish_prime_warp) * num_dish_prime_k_elements;
+      const size_t dish_prime = (dish_prime_warp * num_dish_prime_iterations + dish_prime_iteration) * num_dish_prime_k_elements;
       assert(beam < num_beams);
       assert(dish_prime < num_dishes);
 
@@ -294,9 +299,11 @@ __device__ void load_A(A_register_t &restrict A_register, const ucomplex4 *restr
 
 #ifdef DEBUG_A_ARRAY_READ
         if (threadIdx.x == 0) {
-          const size_t A_offset =
-              &A_array[Alinear(frequency, beam, dish_prime + c * num_dish_prime_k_elements / 2, 0) / 2] - A_array;
-          const size_t A_stride = Alinear(0, 1, 0, 0) / 2;
+          // const size_t A_offset =
+          //     &A_array[Alinear(frequency, beam, dish_prime + c * num_dish_prime_k_elements / 2, 0) / 2] - A_array;
+          // const size_t A_stride = Alinear(0, 1, 0, 0) / 2;
+          const size_t A_offset = &A_array[A2linear(frequency, beam, c, dish_prime) / 2] - A_array;
+          const size_t A_stride = A2linear(0, 1, 0, 0) / 2;
           for (size_t m = 0; m < 8; ++m) {
             for (size_t k = 0; k < 32 / 2; ++k) {
               const int oldval =
@@ -304,19 +311,20 @@ __device__ void load_A(A_register_t &restrict A_register, const ucomplex4 *restr
               assert(oldval == -1);
             }
           }
-          __syncthreads();
         }
+        __syncthreads();
 #endif
 
         // TOOD: Use __ldcs
         // Load 2 consecutive sets of elements of A
         // load_matrix_sync(A0[c], &A_array[Alinear(frequency, beam, dish_prime + c * num_dish_prime_k_elements / 2, 0) / 2],
         //                  Alinear(0, 1, 0, 0));
-        load_matrix_sync(A0[c], &A_array[A2linear(frequency, beam, c, dish_prime) / 2], Alinear(0, 1, 0, 0));
+        load_matrix_sync(A0[c], &A_array[A2linear(frequency, beam, c, dish_prime) / 2], A2linear(0, 1, 0, 0));
       }
 
       assert(beam / A_register_beam_divisor == beam_iteration);
-      assert(dish_prime / A_register_dish_prime_divisor == dish_prime_iteration);
+      // assert(dish_prime / A_register_dish_prime_divisor == dish_prime_iteration);
+      assert(dish_prime / A_register_dish_prime_divisor % A_register_dish_prime_modulo == dish_prime_iteration);
       static_assert(A_register[0][beam_iteration][dish_prime_iteration].num_storage_elements == 1);
       for (int i = 0; i < A_register[0][beam_iteration][dish_prime_iteration].num_storage_elements; ++i) {
         // Extract complex components and remove bias
@@ -349,6 +357,22 @@ __device__ void load_A(A_register_t &restrict A_register, const ucomplex4 *restr
 
         for (size_t c = 0; c < num_complex; ++c) {
           A_register[c][beam_iteration][dish_prime_iteration].x[i] = A0[c].x[i] ^ 0x88888888U;
+
+#warning "TODO"
+          {
+            for (int w = 0; w < 32; ++w) {
+              for (int t = 0; t < 32; ++t) {
+                __syncthreads();
+                if (threadIdx.y == w && threadIdx.x == t) {
+                  if (A_register[c][beam_iteration][dish_prime_iteration].x[i] != 0) {
+                    printf("w=%02d t=%02d c=%01d b=%02d d'=%03d A=0x%08x\n", int(w), int(t), int(c), int(beam), int(dish_prime),
+                           unsigned(A_register[c][beam_iteration][dish_prime_iteration].x[i]));
+                  }
+                }
+              }
+            }
+          }
+          //
         }
       }
     }
@@ -364,6 +388,7 @@ using load_A::A_register_beam_divisor;
 using load_A::A_register_beam_matrix_modulo;
 using load_A::A_register_dish_prime_divisor;
 using load_A::A_register_dish_prime_matrix_modulo;
+using load_A::A_register_dish_prime_modulo;
 
 using load_A::A_register_t;
 
@@ -449,29 +474,21 @@ __device__ void shuffle_E(E_shared_t &restrict E_shared, const ucomplex4 *restri
       // TOOD: Use __ldcs
       E0[p][c] = *(const uint32_t *)&E_array[Elinear(time, frequency, dish, 0, 0) / 2];
 
-      // #warning "TODO"
-      //       E0[p][c] = 0;
-      //       for (size_t e = 0; e < 8; ++e) {
-      //         // this works.
-      //         // const int q = e % 4; // 2*p+c
-      //         // does this?
-      //         const int q = (dish + e / 4) / 16;
-      //         E0[p][c] |= ((q % 16) ^ 0x8) << (4 * e);
-      //       }
-
-      // #warning "TODO"
-      //       {
-      //         if (threadIdx.y == 0) {
-      //           for (int t = 0; t < 32; ++t) {
-      //             __syncthreads();
-      //             if (threadIdx.x == t) {
-      //               for (int e = 0; e < 8; ++e) {
-      //                 printf("p=%d c=%d t=%d e=%d E0=%d\n", int(p), int(c), t, e, ((E0[p][c] ^ 0x88888888) >> (4 * e)) & 0b1111);
-      //               }
-      //             }
-      //           }
-      //         }
-      //       }
+#warning "TODO"
+      {
+        for (int w = 0; w < 32; ++w) {
+          for (int t = 0; t < 32; ++t) {
+            __syncthreads();
+            if (threadIdx.y == w && threadIdx.x == t) {
+              if ((E0[p][c] ^ 0x88888888) != 0) {
+                printf("w=%02d t=%02d p=%01d c=%01d d=%03d E0=0x%08x\n", int(w), int(t), int(p), int(c), int(dish),
+                       unsigned(E0[p][c] ^ 0x88888888));
+              }
+            }
+          }
+        }
+      }
+      //
     }
   }
 
@@ -481,6 +498,13 @@ __device__ void shuffle_E(E_shared_t &restrict E_shared, const ucomplex4 *restri
   // E0[p][c][e] = E[d=p0c0t4t3t2t1t0e2, p=e1, c=e0]
   // E1[p][c][e] = E[d=p0e0t4t3t2t1t0e2, p=e1, c=c0]
   // E2[p][c][e] = E[d=e1e0t4t3t2t1t0e2, p=p0, c=c0]
+
+  // Dish layout over ints:
+  // E0[0][0] = [1 1 1 1 0 0 0 0]
+  // E0[0][1] = [65 65 65 65 64 64 64 64]
+  // E1[0][0] = [65 1 65 1 64 0 64 0]
+  // E1[1][0] = [193 129 193 129 192 128 192 128]
+  // E2[0][0] = [193 129 65 1 192 128 64 0]
 
   // First we split out the complex components and remove the bias
   uint32_t E1[num_polarizations][num_complex];
@@ -502,29 +526,20 @@ __device__ void shuffle_E(E_shared_t &restrict E_shared, const ucomplex4 *restri
       const size_t dish_prime = dish0_prime;
       assert(dish_prime < num_dishes_prime);
 
-      // #warning "TODO"
-      //       {
-      //         if (threadIdx.y == 0) {
-      //           for (int t = 0; t < 32; ++t) {
-      //             __syncthreads();
-      //             if (threadIdx.x == t) {
-      //               for (int e = 0; e < 8; ++e) {
-      //                 printf("p=%d c=%d t=%d e=%d E2=%d\n", int(p), int(c), t, e, (E2[p][c] >> (4 * e)) & 0b1111);
-      //               }
-      //             }
-      //           }
-      //         }
-      //       }
-
-      // #warning "TODO"
-      // if (threadIdx.y == 0) {
-      //   for (size_t e = 0; e < 8; ++e) {
-      //     const int q_prime = threadIdx.x * 8 + e;
-      //     const int q = (q_prime & 0b110000000) | ((q & 0b1100000) >> 5) | ((q % 0b11111) << 2);
-      //     assert(E2[p][c] == q_prime % 7);
-      //   }
-      //   assert(0);
-      // }
+#warning "TODO"
+      {
+        for (int w = 0; w < 32; ++w) {
+          for (int t = 0; t < 32; ++t) {
+            __syncthreads();
+            if (threadIdx.y == w && threadIdx.x == t) {
+              if (E2[p][c] != 0) {
+                printf("w=%02d t=%02d p=%01d c=%01d d'=%03d E2=0x%08x\n", int(w), int(t), int(p), int(c), int(dish_prime),
+                       unsigned(E2[p][c]));
+              }
+            }
+          }
+        }
+      }
 
 #ifdef DEBUG_E_SHARED_WRITE
       const int oldval =
@@ -536,11 +551,6 @@ __device__ void shuffle_E(E_shared_t &restrict E_shared, const ucomplex4 *restri
       E_shared[c][time % E_shared_time_modulo][p][dish_prime / E_shared_dish_prime_divisor] = E2[p][c];
     }
   }
-
-  // #warning "TODO"
-  //   if (threadIdx.y == 0) {
-  //     assert(0);
-  //   }
 }
 
 } // namespace shuffle_E
@@ -595,6 +605,11 @@ __device__ void compute_Ju(Ju_shared_t &restrict Ju_shared, const A_register_t &
   const size_t beam_warp = threadIdx.y / num_dish_prime_warps;
   const size_t dish_prime_warp = threadIdx.y % num_dish_prime_warps;
 
+  const size_t time0 = ((time_iteration_outer * num_time_iterations_inner + time_iteration_inner) * num_time_iterations_inner2 +
+                        time_iteration_inner2) *
+                       num_time_n_elements;
+  const size_t dish_prime0 = dish_prime_warp * num_dish_prime_iterations * num_dish_prime_k_elements;
+
   // Load E-field from shared memory
   // wmma::B[k][n]
   fragment<wmma::matrix_b, num_m_elements, num_n_elements, num_k_elements, experimental::precision::s4, col_major>
@@ -602,10 +617,7 @@ __device__ void compute_Ju(Ju_shared_t &restrict Ju_shared, const A_register_t &
 
   for (size_t c = 0; c < num_complex; ++c) {
     for (size_t dish_prime_iteration = 0; dish_prime_iteration < num_dish_prime_iterations; ++dish_prime_iteration) {
-      const size_t time0 = ((time_iteration_outer * num_time_iterations_inner + time_iteration_inner) * num_time_iterations_inner2 +
-                            time_iteration_inner2) *
-                           num_time_n_elements;
-      const size_t dish_prime0 = (dish_prime_warp * num_dish_prime_iterations + dish_prime_iteration) * num_dish_prime_k_elements;
+      const size_t dish_prime1 = (dish_prime_warp * num_dish_prime_iterations + dish_prime_iteration) * num_dish_prime_k_elements;
 
 #ifdef DEBUG_E_SHARED_READ
       if (threadIdx.x == 0) {
@@ -613,7 +625,7 @@ __device__ void compute_Ju(Ju_shared_t &restrict Ju_shared, const A_register_t &
         for (size_t n = 0; n < 8; ++n) {
           for (size_t k = 0; k < 32 / 8; ++k) {
             atomicAdd(
-                &shuffle_E::E_shared_read_mask[c][time0 % E_shared_time_modulo][0][dish_prime0 / E_shared_dish_prime_divisor] +
+                &shuffle_E::E_shared_read_mask[c][time0 % E_shared_time_modulo][0][dish_prime1 / E_shared_dish_prime_divisor] +
                     n * E_stride + k,
                 num_beam_iterations * num_beam_m_elements);
           }
@@ -622,17 +634,33 @@ __device__ void compute_Ju(Ju_shared_t &restrict Ju_shared, const A_register_t &
 #endif
 
       load_matrix_sync(E[c][dish_prime_iteration],
-                       &E_shared[c][time0 % E_shared_time_modulo][0][dish_prime0 / E_shared_dish_prime_divisor],
+                       &E_shared[c][time0 % E_shared_time_modulo][0][dish_prime1 / E_shared_dish_prime_divisor],
                        (&E_shared[0][0][1][0] - &E_shared[0][0][0][0]) * num_reals_int);
+
+#warning "TODO"
+      {
+        const size_t beam_iteration = 0;
+        const size_t beam0 = (beam_iteration * num_beam_warps + beam_warp) * num_beam_m_elements;
+        for (int w = 0; w < 32; ++w) {
+          for (int t = 0; t < 32; ++t) {
+            __syncthreads();
+            if (threadIdx.y == w && threadIdx.x == t) {
+              for (int i = 0; i < E[c][dish_prime_iteration].num_storage_elements; ++i) {
+                if (E[c][dish_prime_iteration].x[i] != 0) {
+                  printf("load w=%02d t=%02d time=%04d c=%01d b=%02d d'=%03d E=0x%08x\n", int(w), int(t), int(time0), int(c),
+                         int(beam0), int(dish_prime1), unsigned(E[c][dish_prime_iteration].x[i]));
+                }
+              }
+            }
+          }
+        }
+      }
+      //
     }
   }
 
   for (size_t beam_iteration = 0; beam_iteration < num_beam_iterations; ++beam_iteration) {
-    const size_t time0 = ((time_iteration_outer * num_time_iterations_inner + time_iteration_inner) * num_time_iterations_inner2 +
-                          time_iteration_inner2) *
-                         num_time_n_elements;
     const size_t beam0 = (beam_iteration * num_beam_warps + beam_warp) * num_beam_m_elements;
-    const size_t dish_prime0 = dish_prime_warp * num_dish_prime_iterations * num_dish_prime_k_elements;
 
     fragment<wmma::accumulator, num_m_elements, num_n_elements, num_k_elements, int32_t> JurePos, JureNeg, JuimPos;
 
@@ -649,8 +677,49 @@ __device__ void compute_Ju(Ju_shared_t &restrict Ju_shared, const A_register_t &
 
     // Multiply
     for (size_t dish_prime_iteration = 0; dish_prime_iteration < num_dish_prime_iterations; ++dish_prime_iteration) {
+      const size_t dish_prime1 = (dish_prime_warp * num_dish_prime_iterations + dish_prime_iteration) * num_dish_prime_k_elements;
+
+#warning "TODO"
+      {
+        for (int w = 0; w < 32; ++w) {
+          for (int t = 0; t < 32; ++t) {
+            __syncthreads();
+            if (threadIdx.y == w && threadIdx.x == t) {
+              for (int c = 0; c < 2; ++c) {
+                for (int i = 0; i < A_register[c][beam_iteration][dish_prime_iteration].num_storage_elements; ++i) {
+                  if (A_register[c][beam_iteration][dish_prime_iteration].x[i] != 0) {
+                    printf("mma w=%02d t=%02d time=%04d c=%01d b=%02d d'=%03d A=0x%08x\n", int(w), int(t), int(time), int(c),
+                           int(beam), int(dish_prime1), unsigned(A_register[c][beam_iteration][dish_prime_iteration].x[i]));
+#warning "dish' is wrong here?"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+
+#warning "TODO"
+      {
+        for (int w = 0; w < 32; ++w) {
+          for (int t = 0; t < 32; ++t) {
+            __syncthreads();
+            if (threadIdx.y == w && threadIdx.x == t) {
+              for (int c = 0; c < 2; ++c) {
+                for (int i = 0; i < E[c][dish_prime_iteration].num_storage_elements; ++i) {
+                  if (E[c][dish_prime_iteration].x[i] != 0) {
+                    printf("mma w=%02d t=%02d time=%04d c=%01d b=%02d d'=%03d E=0x%08x\n", int(w), int(t), int(time), int(c),
+                           int(beam), int(dish_prime1), unsigned(E[c][dish_prime_iteration].x[i]));
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+
       static_assert(num_beam_iterations == num_beams / A_register_beam_divisor);
-      static_assert(num_dish_prime_iterations == num_dishes / A_register_dish_prime_divisor);
+      static_assert(num_dish_prime_iterations == A_register_dish_prime_modulo);
       mma_sync(JurePos, A_register[0][beam_iteration][dish_prime_iteration], E[0][dish_prime_iteration], JurePos);
       mma_sync(JureNeg, A_register[1][beam_iteration][dish_prime_iteration], E[1][dish_prime_iteration], JureNeg);
       mma_sync(JuimPos, A_register[0][beam_iteration][dish_prime_iteration], E[1][dish_prime_iteration], JuimPos);
@@ -1127,22 +1196,16 @@ void setup_one(vector<ucomplex4> &Earray, vector<ucomplex4> &Aarray, vector<floa
   const size_t time = 0;
   const size_t polarization = 0;
   // const size_t dish = 0;
-  // const size_t beam = 46;
+  // const size_t beam = 65;
   // const size_t frequency = 0;
-  // const size_t time = 96;
-  // const size_t polarization = 0;
-  // const size_t dish = 250;
-  // const size_t dish = 0b011111010; // error
-  // const size_t dish = 0b011111000; // error
-  // const size_t dish = 0b011110000; // error
-  // const size_t dish = 0b011100000; // error
-  // const size_t dish = 0b011000000; // error
-  // const size_t dish = 0b001000000; // error
-  // const size_t dish = 0b010000000; // success
-  // const size_t dish = 0b000000000; // success
-  // const size_t dish = 0;  // success
-  const size_t dish = 1; // error
-  // const size_t dish = 64; // error
+  // const size_t time = 41;
+  // const size_t polarization = 1;
+  // const size_t dish = 200;
+  // const size_t dish = 0b001100100; // error
+  // const size_t dish = 0b001100000; // error
+  const size_t dish = 0b000100000; // error
+  // const size_t dish = 0b000010000; // success
+  // const size_t dish = 0b001000000; // success
 
   const auto has_overflow = [](auto G, auto A, auto E) {
     return real(A * E) > 7 || imag(A * E) > 7 || real(G * A * E) > 7 || imag(G * A * E) > 7;
@@ -1157,7 +1220,6 @@ void setup_one(vector<ucomplex4> &Earray, vector<ucomplex4> &Aarray, vector<floa
     Aval = complex<int>(1, 0);
     Eval = complex<int>(1, 0);
     Gval = 1;
-    // Gval = -2;
   } while (has_overflow(Gval, Aval, Eval));
   const complex<int> Jval = Gval * Aval * Eval;
 
@@ -1191,8 +1253,10 @@ void setup_one(vector<ucomplex4> &Earray, vector<ucomplex4> &Aarray, vector<floa
   for (size_t f = 0; f < num_frequencies; ++f) {
     for (size_t b = 0; b < num_beams; ++b) {
       for (size_t d = 0; d < num_dishes; ++d) {
-        Aarray.at(Alinear(f, b, d, 0) / 2) =
-            f == frequency && b == beam && d == dish /* && (d >= 0 && d < 512) */ /* && d == 0 */ ? Aval4 : ucomplex4(0, 0);
+        Aarray.at(Alinear(f, b, d, 0) / 2) = f == frequency && b == beam && d == dish
+                                                 /* && (d >= 16 && d < 17) */
+                                                 ? Aval4
+                                                 : ucomplex4(0, 0);
         // Aarray.at(Alinear(f, b, d, 0) / 2) = ucomplex4(1, 0);
       }
     }
@@ -1238,6 +1302,19 @@ int main(int argc, char **argv) {
   // Change index order
   vector<ucomplex4> A2array(Aarray.size());
   {
+    for (size_t f = 0; f < num_frequencies; ++f) {
+      for (size_t b = 0; b < num_beams; ++b) {
+        for (size_t d = 0; d < num_dishes; d += 2) {
+          for (size_t c = 0; c < num_complex / 2; ++c) {
+            const uint8_t val = *(const uint8_t *)&Aarray.at(Alinear(f, b, d, c) / 2) ^ 0x88U;
+            if (val != 0) {
+              printf("f=%01d b=%02d d=%02d c=%01d A=0x%02x\n", int(f), int(b), int(d), int(c), unsigned(val));
+            }
+          }
+        }
+      }
+    }
+
     bool Amask[num_frequencies][num_beams][num_dishes][num_complex];
     for (size_t f = 0; f < num_frequencies; ++f) {
       for (size_t b = 0; b < num_beams; ++b) {
@@ -1270,18 +1347,17 @@ int main(int argc, char **argv) {
 
             assert(!Amask[f][b][d][c]);
             Amask[f][b][d][c] = true;
-            assert(!A2mask[f][b][c][d]);
-            A2mask[f][b][c][d] = true;
+            assert(!A2mask[f][b][c][d_prime]);
+            A2mask[f][b][c][d_prime] = true;
 
-            const signed char arrval = Aarray.at(Alinear(f, b, d, c) / 2)[!c];
-            const ucomplex4 oldval = A2array.at(A2linear(f, b, c, d_prime) / 2);
-            ucomplex4 newval;
+            const ucomplex4 &Aelt = Aarray.at(Alinear(f, b, d, c) / 2);
+            ucomplex4 &A2elt = A2array.at(A2linear(f, b, c, d_prime) / 2);
+            const signed char arrval = c == 0 ? Aelt.real() : Aelt.imag();
             if (d_prime % 2 == 0) {
-              newval = ucomplex4(oldval.real(), arrval);
+              A2elt = ucomplex4(A2elt.real(), arrval);
             } else {
-              newval = ucomplex4(arrval, oldval.imag());
+              A2elt = ucomplex4(arrval, A2elt.imag());
             }
-            A2array.at(A2linear(f, b, c, d_prime) / 2) = newval;
           }
         }
       }
@@ -1300,6 +1376,19 @@ int main(int argc, char **argv) {
         for (size_t c = 0; c < num_complex; ++c) {
           for (size_t d = 0; d < num_dishes; ++d) {
             assert(A2mask[f][b][c][d]);
+          }
+        }
+      }
+    }
+
+    for (size_t f = 0; f < num_frequencies; ++f) {
+      for (size_t b = 0; b < num_beams; ++b) {
+        for (size_t c = 0; c < num_complex; ++c) {
+          for (size_t d = 0; d < num_dishes; d += 2) {
+            const uint8_t val = *(const uint8_t *)&A2array.at(A2linear(f, b, c, d) / 2) ^ 0x88U;
+            if (val != 0) {
+              printf("f=%01d b=%02d c=%01d d'=%02d A2=0x%02x\n", int(f), int(b), int(c), int(d), unsigned(val));
+            }
           }
         }
       }
