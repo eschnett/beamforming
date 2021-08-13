@@ -34,6 +34,26 @@ using namespace nvcuda::wmma;
 
 ////////////////////////////////////////////////////////////////////////////////
 
+// Performance notes:
+
+// - For t=32768, f=16, b=96, d=512, p=2, c=2, there are (naively) (t
+//   f b d p c^2) operations, or 206.0e+9 operations.
+//
+// - An Nvidia A40 can perform 600.0e+12 int4 FMAs per second (?),
+//   leading to a minimum run time of 0.34 ms if the kernel were
+//   compute bound.
+//
+// - KS estimates (21-06-19-beamforming-kernel.pdf) that this kernel
+//   will take 5% of an A40. The sampling time is 1.7 us, i.e. t=32768
+//   correspond to 56 milliseconds of data.
+//
+// - We measure that the kernel executes in 6.98 ms on Sky (Nvidia
+//   A40). This corresponds to 12.5% utilisation.
+//
+// - TODO: run just 1 kernel, increase number of frequencies
+
+////////////////////////////////////////////////////////////////////////////////
+
 // Index spaces
 
 // Idea:
@@ -876,7 +896,7 @@ __device__ void transpose_J(ucomplex4 *restrict const J_array, const J_shared_t 
 
 ////////////////////////////////////////////////////////////////////////////////
 
-__global__ void __launch_bounds__(num_threads *num_warps, 1)
+__global__ void __launch_bounds__(num_threads *num_warps)
     form_beams(ucomplex4 *restrict const J_array, const ucomplex4 *restrict const E_array, const ucomplex4 *restrict const A_array,
                const float *restrict const G_array) {
 
@@ -1364,6 +1384,10 @@ int main(int argc, char **argv) {
   err = cudaDeviceSynchronize();
   CHECK_RESULT(err);
 
+  vector<cudaStream_t> streams(num_iters);
+  for (size_t iter = 0; iter < num_iters; ++iter)
+    cudaStreamCreate(&streams.at(iter));
+
   const dim3 numBlocks(num_frequencies);
   const dim3 threadsPerBlock(num_threads, num_warps);
   form_beams<<<numBlocks, threadsPerBlock>>>(J2ptr, Eptr, A2ptr, Gptr);
@@ -1376,7 +1400,7 @@ int main(int argc, char **argv) {
   const auto t0 = gettime();
 
   for (size_t iter = 0; iter < num_iters; ++iter) {
-    form_beams<<<numBlocks, threadsPerBlock>>>(J2ptrs.at(iter), Eptr, A2ptr, Gptr);
+    form_beams<<<numBlocks, threadsPerBlock, 0, streams.at(iter)>>>(J2ptrs.at(iter), Eptr, A2ptr, Gptr);
   }
   err = cudaGetLastError();
   CHECK_RESULT(err);
