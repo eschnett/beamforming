@@ -4,9 +4,13 @@
 #include "arraysizes.hxx"
 #include "icomplex4.hxx"
 
+#include <cooperative_groups.h>
+#include <cooperative_groups/memcpy_async.h>
+// #include <cuda/std/barrier>
 #include <mma.h>
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <complex>
 #include <iostream>
@@ -306,7 +310,7 @@ constexpr size_t A_register_dish_prime_modulo = num_dish_prime_iterations;
 constexpr size_t A_register_beam_matrix_modulo = num_beam_m_elements;
 constexpr size_t A_register_dish_prime_matrix_modulo = num_dish_prime_k_elements;
 
-using A_register_t = fragment<wmma::matrix_a, num_m_elements, num_n_elements, num_k_elements, experimental::precision::s4,
+using A_register_t = fragment<wmma::matrix_a, num_m_elements, num_n_elements, num_k_elements, wmma::experimental::precision::s4,
                               row_major>[num_complex][num_beams / A_register_beam_divisor][A_register_dish_prime_modulo];
 
 __device__ void load_A(A_register_t &restrict A_register, const ucomplex4 *restrict const A_array, const size_t frequency) {
@@ -320,7 +324,7 @@ __device__ void load_A(A_register_t &restrict A_register, const ucomplex4 *restr
       assert(dish_prime < num_dishes);
 
       // wmma::A[m][k]
-      fragment<wmma::matrix_a, num_m_elements, num_n_elements, num_k_elements, experimental::precision::s4, row_major>
+      fragment<wmma::matrix_a, num_m_elements, num_n_elements, num_k_elements, wmma::experimental::precision::s4, row_major>
           A0[num_complex];
       for (size_t c = 0; c < num_complex; ++c) {
 
@@ -408,6 +412,8 @@ static_assert(num_dish_warps * num_dish_threads * num_dish_explicit_outer * num_
 constexpr size_t E_shared_time_modulo = num_time_warps;
 constexpr size_t E_shared_dish_prime_divisor = num_reals_int;
 constexpr size_t E_shared_padding = 4;
+
+using E_async_t = uint32_t[num_time_warps][num_dishes_prime * num_polarizations * num_complex / num_reals_int];
 
 using E_shared_t = uint32_t[num_complex][E_shared_time_modulo][num_polarizations]
                            [num_dishes_prime / E_shared_dish_prime_divisor + E_shared_padding];
@@ -549,6 +555,106 @@ __device__ void shuffle_E(E_shared_t &restrict E_shared, const ucomplex4 *restri
   }
 }
 
+__device__ void shuffle_E_0(const cooperative_groups::thread_block &tb, E_async_t &restrict E_async,
+                            const ucomplex4 *restrict const E_array, const size_t frequency, const size_t time_iteration_outer,
+                            const size_t time_iteration_inner) {
+  const size_t time0 = (time_iteration_outer * num_time_iterations_inner + time_iteration_inner) * num_time_warps;
+
+  for (int time = time0; time < time0 + num_time_warps; ++time) {
+    assert(uintptr_t(&E_async[time - time0][0]) % 128 == 0);
+    assert(uintptr_t((const uint32_t *)&E_array[Elinear(time, frequency, 0, 0, 0) / 2]) % 128 == 0);
+    const size_t size = sizeof E_async[time - time0];
+    // cooperative_groups::memcpy_async(tb, &E_async[time - time0][0], cuda::aligned_size_t<128>(size),
+    //                                  (const uint32_t *)&E_array[Elinear(time, frequency, 0, 0, 0) / 2],
+    //                                  cuda::aligned_size_t<128>(size));
+    cooperative_groups::memcpy_async(tb, &E_async[time - time0][0],
+                                     (const uint32_t *)&E_array[Elinear(time, frequency, 0, 0, 0) / 2], size);
+  }
+}
+
+__device__ void shuffle_E_1(const cooperative_groups::thread_block &tb, E_shared_t &restrict E_shared,
+                            const E_async_t &restrict E_async, const size_t frequency, const size_t time_iteration_outer,
+                            const size_t time_iteration_inner) {
+  // cooperative_groups::wait(tb);
+  cooperative_groups::wait_prior<16 + 16>(tb);
+  cooperative_groups::wait_prior<16 + 15>(tb);
+  cooperative_groups::wait_prior<16 + 14>(tb);
+  cooperative_groups::wait_prior<16 + 13>(tb);
+  cooperative_groups::wait_prior<16 + 12>(tb);
+  cooperative_groups::wait_prior<16 + 11>(tb);
+  cooperative_groups::wait_prior<16 + 10>(tb);
+  cooperative_groups::wait_prior<16 + 9>(tb);
+  cooperative_groups::wait_prior<16 + 8>(tb);
+  cooperative_groups::wait_prior<16 + 7>(tb);
+  cooperative_groups::wait_prior<16 + 6>(tb);
+  cooperative_groups::wait_prior<16 + 5>(tb);
+  cooperative_groups::wait_prior<16 + 4>(tb);
+  cooperative_groups::wait_prior<16 + 3>(tb);
+  cooperative_groups::wait_prior<16 + 2>(tb);
+  cooperative_groups::wait_prior<16 + 1>(tb);
+
+  const size_t time_warp = threadIdx.y / num_dish_warps;
+  const size_t dish_warp = threadIdx.y % num_dish_warps;
+  const size_t dish_thread = threadIdx.x % num_dish_threads;
+  const size_t time = (time_iteration_outer * num_time_iterations_inner + time_iteration_inner) * num_time_warps + time_warp;
+  const size_t dish0 = (dish_warp * num_dish_explicit_outer * num_dish_threads + dish_thread) * num_dish_explicit_inner;
+  const size_t dish0_prime = (dish_warp * num_dish_threads + dish_thread) * num_dish_explicit_inner * num_dish_explicit_outer;
+  assert(time < num_times);
+  assert(dish0 < num_dishes);
+  assert(dish0_prime < num_dishes);
+
+  // Load E-field from prefetched memory
+  // Note: These are not yet split into polarizations complex components. `p` and `c` are the "outer" explicit indices.
+  uint32_t E0[num_polarizations][num_complex];
+  for (size_t p = 0; p < num_polarizations; ++p) {
+    for (size_t c = 0; c < num_complex; ++c) {
+      static_assert(num_dish_explicit_outer == num_polarizations * num_complex);
+      static_assert(num_dish_explicit_outer * num_dish_explicit_inner == num_reals_int);
+      const size_t dish = dish0 + (p * num_complex + c) * num_dish_threads * num_dish_explicit_inner;
+      assert(dish < num_dishes);
+
+      E0[p][c] = E_async[time % E_shared_time_modulo][ncomplex * npolarizations * dish / num_reals_int];
+    }
+  }
+
+  // Layout: p=0..1 (1 bit), p=0..1 (1 bit), e=0..7 ("element" inside each int, 3 bits), t=0..31 (thread)
+  // Notation: p0 := bit 0 of p; e2 := bit 2 of e, etc.
+  //
+  // E0[p][c][e] = E[d=p0c0t4t3t2t1t0e2, p=e1, c=e0]
+  // E1[p][c][e] = E[d=p0e0t4t3t2t1t0e2, p=e1, c=c0]
+  // E2[p][c][e] = E[d=e1e0t4t3t2t1t0e2, p=p0, c=c0]
+
+  // Dish layout over ints:
+  // E0[0][0] = [1 1 1 1 0 0 0 0]
+  // E0[0][1] = [65 65 65 65 64 64 64 64]
+  // E1[0][0] = [65 1 65 1 64 0 64 0]
+  // E1[1][0] = [193 129 193 129 192 128 192 128]
+  // E2[0][0] = [193 129 65 1 192 128 64 0]
+
+  // First we split out the complex components and remove the bias
+  uint32_t E1[num_polarizations][num_complex];
+  for (size_t p = 0; p < num_polarizations; ++p) {
+    E1[p][0] = extract_real(E0[p][0], E0[p][1]) ^ 0x88888888U;
+    E1[p][1] = extract_imag(E0[p][0], E0[p][1]) ^ 0x88888888U;
+  }
+
+  // Next we separate the polarizations
+  uint32_t E2[num_polarizations][num_complex];
+  for (size_t c = 0; c < num_complex; ++c) {
+    E2[0][c] = __byte_perm(E1[0][c], E1[1][c], 0x6240);
+    E2[1][c] = __byte_perm(E1[0][c], E1[1][c], 0x7351);
+  }
+
+  // Store into shared memory
+  for (size_t c = 0; c < num_complex; ++c) {
+    for (size_t p = 0; p < num_polarizations; ++p) {
+      const size_t dish_prime = dish0_prime;
+      assert(dish_prime < num_dishes_prime);
+      E_shared[c][time % E_shared_time_modulo][p][dish_prime / E_shared_dish_prime_divisor] = E2[p][c];
+    }
+  }
+}
+
 } // namespace shuffle_E
 
 using shuffle_E::num_time_iterations_inner;
@@ -557,6 +663,7 @@ using shuffle_E::num_time_iterations_outer;
 using shuffle_E::E_shared_dish_prime_divisor;
 using shuffle_E::E_shared_time_modulo;
 
+using shuffle_E::E_async_t;
 using shuffle_E::E_shared_t;
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -608,7 +715,7 @@ __device__ void compute_Ju(Ju_shared_t &restrict Ju_shared, const A_register_t &
 
   // Load E-field from shared memory
   // wmma::B[k][n]
-  fragment<wmma::matrix_b, num_m_elements, num_n_elements, num_k_elements, experimental::precision::s4, col_major>
+  fragment<wmma::matrix_b, num_m_elements, num_n_elements, num_k_elements, wmma::experimental::precision::s4, col_major>
       E[num_complex][num_dish_prime_iterations];
 
   for (size_t c = 0; c < num_complex; ++c) {
@@ -913,13 +1020,38 @@ __device__ void transpose_J(ucomplex4 *restrict const J_array, const J_shared_t 
 
 ////////////////////////////////////////////////////////////////////////////////
 
+// Allocate shared memory, aligning to 128 bytes
+constexpr size_t E_async0_offset = 0;
+constexpr size_t E_async1_offset = 0; // (E_async0_offset + sizeof(E_async_t) + 127) & -128U;
+constexpr size_t E_shared_offset = 0; // (E_async1_offset + sizeof(E_async_t) + 127) & -128U;
+constexpr size_t Ju_shared_offset = (E_shared_offset + sizeof(E_shared_t) + 127) & -128U;
+constexpr size_t J_shared_offset = (Ju_shared_offset + sizeof(Ju_shared_t) + 127) & -128U;
+constexpr size_t shared_bytes = (J_shared_offset + sizeof(J_shared_t) + 127) & -128U;
+
+extern __device__ __shared__ unsigned char shared_base[];
+
 __global__ void __launch_bounds__(num_threads *num_warps)
     form_beams(ucomplex4 *restrict const J_array, const ucomplex4 *restrict const E_array, const ucomplex4 *restrict const A_array,
                const float *restrict const G_array) {
 
+  E_async_t &restrict E_async0 = *(E_async_t *)&shared_base[E_async0_offset];
+  E_async_t &restrict E_async1 = *(E_async_t *)&shared_base[E_async1_offset];
+  E_shared_t &restrict E_shared = *(E_shared_t *)&shared_base[E_shared_offset];
+  Ju_shared_t &restrict Ju_shared = *(Ju_shared_t *)&shared_base[Ju_shared_offset];
+  J_shared_t &restrict J_shared = *(J_shared_t *)&shared_base[J_shared_offset];
+  E_async_t *restrict const E_asyncs[2]{&E_async0, &E_async1};
+  int E_async_toggle = 0;
+
+  const cooperative_groups::thread_block tb = cooperative_groups::this_thread_block();
+
   // Each frequency is transformed independently. We use one thread block per frequency.
 
   const size_t frequency = blockIdx.x;
+
+  // {
+  //   E_async_t &restrict E_async = *E_asyncs[E_async_toggle];
+  //   shuffle_E::shuffle_E_0(tb, E_async, E_array, frequency, 0, 0);
+  // }
 
 #ifdef DEBUG_A_ARRAY_READ
   if (threadIdx.x == 0 && threadIdx.y == 0) {
@@ -951,9 +1083,9 @@ __global__ void __launch_bounds__(num_threads *num_warps)
   load_A::load_A(A_register, A_array, frequency);
 
   for (size_t time_iteration_outer = 0; time_iteration_outer < num_time_iterations_outer; ++time_iteration_outer) {
-    __shared__ E_shared_t E_shared;
-    __shared__ Ju_shared_t Ju_shared;
-    __shared__ J_shared_t J_shared;
+    // __shared__ E_shared_t E_shared;
+    // __shared__ Ju_shared_t Ju_shared;
+    // __shared__ J_shared_t J_shared;
 
 #ifdef DEBUG_J_SHARED_WRITE
     if (threadIdx.x == 0 && threadIdx.y == 0) {
@@ -985,6 +1117,21 @@ __global__ void __launch_bounds__(num_threads *num_warps)
 
       shuffle_E::shuffle_E(E_shared, E_array, frequency, time_iteration_outer, time_iteration_inner);
       __syncthreads();
+      // __shared__ E_async_t E_async;
+      // {
+      //   const int next_E_async_toggle = (E_async_toggle + 1) % 2;
+      //   const int next_time_iteration_inner = (time_iteration_inner + 1) % num_time_iterations_inner;
+      //   const int next_time_iteration_outer = time_iteration_outer + (time_iteration_inner == 0);
+      //   if (time_iteration_outer < num_time_iterations_outer) {
+      //     E_async_t &restrict E_async = *E_asyncs[next_E_async_toggle];
+      //     shuffle_E::shuffle_E_0(tb, E_async, E_array, frequency, next_time_iteration_outer, next_time_iteration_inner);
+      //   }
+      // }
+      // {
+      //   E_async_t &restrict E_async = *E_asyncs[E_async_toggle];
+      //   shuffle_E::shuffle_E_1(tb, E_shared, E_async, frequency, time_iteration_outer, time_iteration_inner);
+      // }
+      // __syncthreads();
 
 #ifdef DEBUG_E_SHARED_WRITE
       __syncthreads();
@@ -1131,6 +1278,8 @@ __global__ void __launch_bounds__(num_threads *num_warps)
       }
     }
 #endif
+
+    E_async_toggle = (E_async_toggle + 1) % 2;
 
   } // for time_iteration_outer
 
@@ -1377,7 +1526,7 @@ int main(int argc, char **argv) {
   }
 
   // constexpr size_t num_iters = 0; // benchmark iterations
-  constexpr size_t num_iters = 100; // benchmark iterations
+  constexpr size_t num_iters = 1; // benchmark iterations
 
   cout << "Forming beams...\n";
   ucomplex4 *Eptr = nullptr;
@@ -1405,9 +1554,12 @@ int main(int argc, char **argv) {
   for (size_t iter = 0; iter < num_iters; ++iter)
     cudaStreamCreate(&streams.at(iter));
 
+  err = cudaFuncSetAttribute(form_beams, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_bytes);
+  CHECK_RESULT(err);
+
   const dim3 numBlocks(num_frequencies);
   const dim3 threadsPerBlock(num_threads, num_warps);
-  form_beams<<<numBlocks, threadsPerBlock>>>(J2ptr, Eptr, A2ptr, Gptr);
+  form_beams<<<numBlocks, threadsPerBlock, shared_bytes>>>(J2ptr, Eptr, A2ptr, Gptr);
   err = cudaGetLastError();
   CHECK_RESULT(err);
   err = cudaDeviceSynchronize();
@@ -1417,7 +1569,7 @@ int main(int argc, char **argv) {
   const auto t0 = gettime();
 
   for (size_t iter = 0; iter < num_iters; ++iter) {
-    form_beams<<<numBlocks, threadsPerBlock, 0, streams.at(iter)>>>(J2ptrs.at(iter), Eptr, A2ptr, Gptr);
+    form_beams<<<numBlocks, threadsPerBlock, shared_bytes, streams.at(iter)>>>(J2ptrs.at(iter), Eptr, A2ptr, Gptr);
   }
   err = cudaGetLastError();
   CHECK_RESULT(err);
