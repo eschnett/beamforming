@@ -45,12 +45,23 @@ using namespace nvcuda::wmma;
 //
 // - KS estimates (21-06-19-beamforming-kernel.pdf) that this kernel
 //   will take 5% of an A40. The sampling time is 1.7 us, i.e. t=32768
-//   correspond to 56 milliseconds of data.
+//   correspond to 56 ms of data.
 //
-// - We measure that the kernel executes in 6.98 ms on Sky (Nvidia
-//   A40). This corresponds to 12.5% utilisation.
+// - We measure that the kernel executes in 2.19 ms on Sky (Nvidia
+//   A40). This corresponds to 3.9% utilisation.
 //
 // - TODO: run just 1 kernel, increase number of frequencies
+//
+// - TODO: avoid clamping when reducing bit depth
+//
+// - TODO: play with prefetching for global loads (memcpy_async)
+//
+// - TODO: replace global memory loads with trivial statements to
+//   check performance
+//
+// - TODO: put G into constant memory?
+//
+// - TODO: store G as int instead of float, then shift right
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -454,8 +465,10 @@ __device__ void shuffle_E(E_shared_t &restrict E_shared, const ucomplex4 *restri
       //         }
       //       }
 
-      // TOOD: Use __ldcs
+      // __ldcs and __ldlu are slower
       E0[p][c] = *(const uint32_t *)&E_array[Elinear(time, frequency, dish, 0, 0) / 2];
+      // E0[p][c] = __ldlu((const uint32_t *)&E_array[Elinear(time, frequency, dish, 0, 0) / 2]);
+      // E0[p][c] = __ldcs((const uint32_t *)&E_array[Elinear(time, frequency, dish, 0, 0) / 2]);
 
       // #warning "TODO"
       // {
@@ -710,6 +723,7 @@ __device__ void compute_Ju(Ju_shared_t &restrict Ju_shared, const A_register_t &
 
     assert(uintptr_t(&G_array[Glinear(frequency, beam)]) % sizeof(float) == 0);
     const float G = G_array[Glinear(frequency, beam)];
+    // IDEA const int G = ((const int *)G_array)[Glinear(frequency, beam)];
 
     // Extract result from Ju matrix
     int8_t Ju8[num_polarizations][num_complex];
@@ -723,7 +737,8 @@ __device__ void compute_Ju(Ju_shared_t &restrict Ju_shared, const A_register_t &
       for (size_t c = 0; c < num_complex; ++c) {
 #warning "TODO: add overflow checks"
 #warning "TODO: sum/round is in different order"
-        Ju8[p][c] = clamp(int32_t(lrintf(G * float(Ju[c]))), -127, 127);
+        Ju8[p][c] = clamp(int32_t(rintf(G * float(Ju[c]))), -127, 127);
+        // IDEA Ju8[p][c] = clamp((G * Ju[c]) >> 20, -127, 127);
       }
     }
     // CUDA is little endian
@@ -888,8 +903,10 @@ __device__ void transpose_J(ucomplex4 *restrict const J_array, const J_shared_t 
 #endif
 
     // Write to global memory
-    // TOOD: Use __stcs
+    // __stcs and __stwt are slower
     *(uint32_t *)&J_array[J2linear(beam, frequency, time0, 0, 0) / 2] = Jall;
+    // __stcs((uint32_t *)&J_array[J2linear(beam, frequency, time0, 0, 0) / 2], Jall);
+    // __stwt((uint32_t *)&J_array[J2linear(beam, frequency, time0, 0, 0) / 2], Jall);
   }
 }
 } // namespace transpose_J
