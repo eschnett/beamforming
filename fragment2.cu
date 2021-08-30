@@ -397,7 +397,7 @@ template <int m, int n, int k> void examine_accumulator() {
 
   for (size_t r = 0; r < m; ++r) {
     for (size_t c = 0; c < n; ++c) {
-      elt(Cmat, r, c) = n * r + c;
+      elt(Cmat, r, c) = 0x100 * r + c;
     }
   }
 
@@ -405,7 +405,7 @@ template <int m, int n, int k> void examine_accumulator() {
   for (size_t r = 0; r < m; ++r) {
     cout << "    ";
     for (size_t c = 0; c < n; ++c) {
-      cout << setw(2) << setfill('0') << hex << elt(Cmat, r, c) << dec << " ";
+      cout << setw(4) << setfill('0') << hex << elt(Cmat, r, c) << dec << " ";
     }
     cout << "\n";
   }
@@ -438,7 +438,7 @@ template <int m, int n, int k> void examine_accumulator() {
   for (size_t thread = 0; thread < 32; ++thread) {
     cout << "    ";
     for (size_t reg = 0; reg < m * n / 32; ++reg) {
-      cout << setw(2) << setfill('0') << hex << frag.at(thread * m * n / 32 + reg) << dec << " ";
+      cout << setw(4) << setfill('0') << hex << frag.at(thread * m * n / 32 + reg) << dec << " ";
     }
     cout << "\n";
   }
