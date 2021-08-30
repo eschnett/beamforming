@@ -8,9 +8,9 @@ CU = nvcc
 # CXXFLAGS = -std=c++17 -fopenmp -Drestrict=__restrict__ -march=native -g
 # CUFLAGS = -std=c++17 --compiler-options -std=c++17 -Drestrict=__restrict__ --expt-relaxed-constexpr --gpu-architecture sm_75 --compiler-options -march=native -g --compiler-options -g
 # Optimize
-CFLAGS = -std=c11 -fopenmp -march=native -O3 -DNDEBUG
-CXXFLAGS = -std=c++17 -fopenmp -Drestrict=__restrict__ -march=native -O3 -DNDEBUG
-CUFLAGS = -std=c++17 --compiler-options -std=c++17 -Drestrict=__restrict__ --expt-relaxed-constexpr --gpu-architecture sm_75 --compiler-options -march=native -O3 --compiler-options -O3 -DNDEBUG
+# CFLAGS = -std=c11 -fopenmp -march=native -O3 -DNDEBUG
+# CXXFLAGS = -std=c++17 -fopenmp -Drestrict=__restrict__ -march=native -O3 -DNDEBUG
+# CUFLAGS = -std=c++17 --compiler-options -std=c++17 -Drestrict=__restrict__ --expt-relaxed-constexpr --gpu-architecture sm_75 --compiler-options -march=native -O3 --compiler-options -O3 -DNDEBUG
 
 # Sky
 # # Debug
@@ -18,9 +18,9 @@ CUFLAGS = -std=c++17 --compiler-options -std=c++17 -Drestrict=__restrict__ --exp
 # CXXFLAGS = -std=c++17 -fopenmp -Drestrict=__restrict__ -march=native -g
 # CUFLAGS = -std=c++17 --compiler-options -std=c++17 -Drestrict=__restrict__ --expt-relaxed-constexpr --gpu-architecture sm_80 --compiler-options -march=native -g --compiler-options -g
 # Optimize
-# CFLAGS = -std=c11 -fopenmp -march=native -O3 -DNDEBUG
-# CXXFLAGS = -std=c++17 -fopenmp -Drestrict=__restrict__ -march=native -O3 -DNDEBUG
-# CUFLAGS = -std=c++17 --compiler-options -std=c++17 -Drestrict=__restrict__ --expt-relaxed-constexpr --ftz=true --extra-device-vectorization --gpu-architecture sm_80 --compiler-options -march=native -O3 --compiler-options -O3 -DNDEBUG
+CFLAGS = -std=c11 -fopenmp -march=native -O3 -DNDEBUG
+CXXFLAGS = -std=c++17 -fopenmp -Drestrict=__restrict__ -march=native -O3 -DNDEBUG
+CUFLAGS = -std=c++17 --compiler-options -std=c++17 -Drestrict=__restrict__ --expt-relaxed-constexpr --ftz=true --extra-device-vectorization --gpu-architecture sm_80 --compiler-options -march=native -O3 --compiler-options -O3 -DNDEBUG
 
 
 
